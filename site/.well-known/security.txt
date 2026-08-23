@@ -1,0 +1,8 @@
+# RFC 9116. Expires is a required field and the file is invalid once it lapses,
+# so test/lint-site-spec.sh checks it on every CI run: the build goes red 30 days
+# before the date below, which is the reminder to extend it.
+Contact: mailto:security@eterdb.com
+Contact: https://github.com/eterdb/eterdb/security/advisories/new
+Expires: 2027-08-09T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://eterdb.com/.well-known/security.txt

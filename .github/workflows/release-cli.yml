@@ -1,0 +1,39 @@
+# Release the `eter` CLI: cross-compiled binaries + Homebrew cask.
+#
+# Fires on a version tag (vX.Y.Z). goreleaser builds the CLI for macOS/Linux
+# (amd64+arm64), creates the GitHub Release with the tarballs + checksums, and pushes
+# the Homebrew cask to eterdb/homebrew-tap. Publishing the release then triggers
+# publish-images, so one `vX.Y.Z` tag ships both the CLI and the engine images.
+#
+# One-time owner setup: create the eterdb/homebrew-tap repo and a HOMEBREW_TAP_TOKEN
+# secret (a PAT with contents:write on that repo) so the cask push succeeds.
+name: release-cli
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release + upload assets
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser needs full history + tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

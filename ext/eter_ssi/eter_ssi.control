@@ -1,0 +1,6 @@
+# eter_ssi — real SSI read/write dependency capture (Phase 2, strict mode)
+comment = 'EterDB: persist Postgres SSI predicate-read dependencies for dependency-aware undo'
+default_version = '0.1.0'
+module_pathname = '$libdir/eter_ssi'
+relocatable = false
+requires = ''

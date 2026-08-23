@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>eterDB | How it works</title>
+<meta name="description" content="How eterDB undoes a single committed Postgres transaction: the shape of the system, out-of-process write capture from the WAL, in-engine read-dependency capture on top of SSI, on-demand dependency graphs, and WAL-replay time travel. With animated diagrams." />
+
+<link rel="canonical" href="https://eterdb.com/tech" />
+
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://eterdb.com/tech" />
+<meta property="og:site_name" content="eterDB" />
+<meta property="og:title" content="eterDB | How it works" />
+<meta property="og:description" content="An illustrated tour of transaction-level undo on Postgres: row versions, the WAL, the read-dependency a backup can't see, and WAL-replay time travel." />
+<meta property="og:image" content="https://eterdb.com/assets/og.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="eterDB: Break production. Undo it. Even when an agent did it." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="eterDB | How it works" />
+<meta name="twitter:description" content="An illustrated tour of transaction-level undo on Postgres: row versions, the WAL, the read-dependency a backup can't see, and WAL-replay time travel." />
+<meta name="twitter:image" content="https://eterdb.com/assets/og.png" />
+<meta name="twitter:image:alt" content="eterDB: Break production. Undo it. Even when an agent did it." />
+<meta name="theme-color" content="#fbfbfa" />
+<!-- The site is light-only and monochrome by design, so it declares `light`
+     rather than `light dark`: the browser paints the canvas, scrollbars and
+     form controls light from the first byte, with no dark-mode flash. -->
+<meta name="color-scheme" content="light" />
+
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+<link rel="manifest" href="/site.webmanifest" />
+
+<!-- Fonts are self-hosted (site/assets/generate-fonts.py), so there is no
+     third-party origin on the critical path. Preload only the two faces that
+     style above-the-fold text; the latin-ext files load on demand. -->
+<link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="/fonts.css?v=20260809-1" />
+<link rel="stylesheet" href="/styles.css?v=20260809-1" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "eterDB: How it works",
+  "description": "An illustrated tour of transaction-level undo on Postgres: row versions, the WAL, the read-dependency a backup can't see, and WAL-replay time travel.",
+  "url": "https://eterdb.com/tech",
+  "image": "https://eterdb.com/assets/og.png",
+  "author": { "@type": "Organization", "name": "eterDB", "url": "https://eterdb.com/" },
+  "publisher": { "@type": "Organization", "name": "eterDB", "url": "https://eterdb.com/", "logo": "https://eterdb.com/assets/og.png" }
+}
+</script>
+
+<!-- Two levels is the whole hierarchy, so the visible trail is the header's
+     "Homepage / Under the hood" nav; this is the machine-readable half. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "eterDB", "item": "https://eterdb.com/" },
+    { "@type": "ListItem", "position": 2, "name": "How it works", "item": "https://eterdb.com/tech" }
+  ]
+}
+</script>
+</head>
+<body>
+
+<!-- First focusable element on the page: lets a keyboard or screen-reader user
+     jump the header and nav straight to the content. Visually hidden until it
+     takes focus (see .skip-link in styles.css). -->
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ───────────────────────── Global header ─────────────────────────
+     Keep identical across index/tech; only the .active nav link differs. -->
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="brand site-logo" href="/" aria-label="eterDB home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="11" fill="currentColor"/>
+          <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889"/>
+          <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z"/>
+        </svg>
+      </span>
+      <span class="brand-name">eterDB</span>
+    </a>
+    <button type="button" class="nav-burger" id="nav-burger" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">
+      <span></span><span></span>
+    </button>
+    <nav class="site-nav" id="site-nav">
+      <a href="/">Homepage</a>
+      <a href="/tech" class="active" aria-current="page">Under the hood</a>
+      <!-- Official GitHub Buttons widget, star + live count. buttons.js REPLACES
+           this anchor with an unclassed <span>, so every layout rule has to be set on
+           the .nav-star wrapper, never on .github-button. Default size here: the
+           large variant is 30px tall against a 22px text row. -->
+      <span class="nav-star">
+        <a class="github-button" href="https://github.com/eterdb/eterdb"
+          data-show-count="true" aria-label="Star eterdb/eterdb on GitHub">Star</a>
+      </span>
+    </nav>
+  </div>
+</header>
+
+<main class="doc" id="main">
+
+<!-- ───────────────────────── Header ───────────────────────── -->
+<header class="doc-hero">
+  <h1>How eterDB works</h1>
+</header>
+
+<!-- ───────────────────────── Table of contents ─────────────────────────
+     Static at-the-top ToC, nine sections, so a reader can see the whole shape
+     of the page and jump straight in. Two columns on desktop, one on mobile.
+
+     Section order follows one rule: every Postgres concept is introduced in the
+     section that needs it, and nowhere earlier. There is no primer up front.
+     Row versions arrive with write capture (§3) because that is what the
+     before-image is for; heap pages and ctids arrive inside §4 because that is
+     where an address that moves breaks something. If you find yourself adding a
+     concept to a section that only forward-references it, it belongs in the
+     later section instead. -->
+<nav class="doc-toc" aria-label="Contents">
+  <span class="doc-toc-title">Contents</span>
+  <ol class="doc-toc-list">
+    <li><a href="#basics"><span class="doc-toc-num">1</span> Transactions, and what gets undone</a></li>
+    <li><a href="#arch"><span class="doc-toc-num">2</span> The shape of the system</a></li>
+    <li><a href="#writes"><span class="doc-toc-num">3</span> Capturing writes</a></li>
+    <li><a href="#reads"><span class="doc-toc-num">4</span> The dependency a backup can't see</a></li>
+    <li><a href="#undo"><span class="doc-toc-num">5</span> Computing an undo</a></li>
+    <li><a href="#storage"><span class="doc-toc-num">6</span> Schema changes and time travel</a></li>
+    <li><a href="#deploy"><span class="doc-toc-num">7</span> Deploying it</a></li>
+    <li><a href="#limits"><span class="doc-toc-num">8</span> Trade-offs and overhead</a></li>
+    <li><a href="#next"><span class="doc-toc-num">9</span> What's next</a></li>
+  </ol>
+</nav>
+
+<!-- ───────────────────────── 1 · The unit of undo ───────────────────────── -->
+<section class="doc-section" id="basics">
+  <h2>1. Transactions, and what gets undone</h2>
+
+  <p>
+    <b>Every change is a transaction.</b> You rarely type the word. Run a bare <code>UPDATE</code>
+    and Postgres wraps it in one for you:
+  </p>
+
+  <div class="code-pair">
+    <figure>
+      <span class="cp-label">What you write</span>
+<pre class="snip">
+<span class="c-key">UPDATE</span> accounts
+  <span class="c-key">SET</span> balance = balance - <span class="c-num">100</span>
+<span class="c-key">WHERE</span> id = <span class="c-num">7</span>;</pre>
+    </figure>
+    <div class="cp-arrow" aria-hidden="true">→</div>
+    <figure>
+      <span class="cp-label">What Postgres runs</span>
+<pre class="snip">
+<span class="c-wrap">BEGIN;</span>     <span class="c-cmt">← added</span>
+  <span class="c-key">UPDATE</span> accounts
+    <span class="c-key">SET</span> balance = balance - <span class="c-num">100</span>
+  <span class="c-key">WHERE</span> id = <span class="c-num">7</span>;
+<span class="c-wrap">COMMIT;</span>    <span class="c-cmt">← added</span></pre>
+    </figure>
+  </div>
+
+  <p>
+    It matters when one action is really several writes that must stand or fall together. A transfer
+    is a debit <b>and</b> a credit, never one without the other. Your ORM's transaction block lowers
+    to exactly that shape: a <code>BEGIN</code>, the writes, a <code>COMMIT</code>.
+  </p>
+
+  <p>
+    All of it is written or none of it is. Fail partway and Postgres discards the unit as if it never
+    ran. Commit and the change survives a crash. That all-or-nothing unit is the natural thing to
+    reverse, which is why eterDB undoes a transaction and not a stray row.
+  </p>
+
+  <figure class="fig wide" data-fig="basics">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">A transfer staged statement by statement, then committed or rolled back. Both rows are written together, or neither is.</figcaption>
+  </figure>
+
+  <p>
+    So the question is what a committed transaction leaves behind that's enough to run it backwards.
+    Two things, and they're captured by two different halves of the system: the rows it
+    <b>wrote</b>, and the rows it <b>read</b>.
+  </p>
+</section>
+
+<!-- ───────────────────────── 2 · The shape of the system ───────────────────────── -->
+<section class="doc-section" id="arch">
+  <h2>2. The shape of the system</h2>
+  <p>
+    Exactly one job has to run inside the Postgres process: recording what each query
+    <em>read</em> (<a href="#reads">§4</a>). A read leaves nothing behind once the query finishes, and
+    it's visible only inside the backend that ran it. <b>Everything else runs outside the engine.</b>
+    Write history goes to a sidecar, storage snapshots to another, and the dependency graph and undo
+    logic to extensions plus a separate metadata store.
+  </p>
+  <p>
+    Reverts are rare and don't need to be fast, so anything not required at commit time stays off
+    the hot path. Hover any box for detail.
+  </p>
+
+  <figure class="fig wide" data-fig="arch">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">Writes (blue) and the read-set (amber) stream out of the engine after commit. The revert path (green) runs on demand. Amber is the only in-engine piece. Hover for detail.</figcaption>
+  </figure>
+
+  <p>
+    The in-engine part: a read-capture hook, an append-only file the reads are written to, transient
+    per-backend bookkeeping of what has been read, and the functions that apply compensating DML.
+    The dependency graph
+    is <em>not</em> built in the engine. Captured reads are forwarded to the store, and the graph is
+    derived there when an undo is requested.
+  </p>
+  <p>
+    <b>Revert latency</b> therefore depends on the transaction rather than on the database.
+  </p>
+
+<pre class="snip">
+revert time   <span class="c-good">scales with</span>     candidate read-edges + the txn's own ops
+              <span class="c-dim">independent of</span>  database size, history length, txn age</pre>
+
+  <p class="doc-note">
+    A months-old target on a million-row database costs about what a fresh one with the same fan-out
+    costs. The work happens at revert time, where seconds are acceptable, rather than at commit time.
+  </p>
+</section>
+
+<!-- ───────────────────────── 3 · Capturing writes ─────────────────────────
+     Row versions, xmin/xmax and VACUUM are introduced HERE and not earlier:
+     the before-image is the first thing on the page that needs them. -->
+<section class="doc-section" id="writes">
+  <h2>3. Capturing writes</h2>
+  <p>
+    Undoing a write needs the row as it was before. Postgres writes one down already, without being
+    asked. An <code>UPDATE</code> doesn't overwrite the row where it sits: it writes a <em>new</em>
+    version and marks the old one dead, so a row that has just been debited physically holds
+    <b>two</b> versions.
+  </p>
+
+  <div class="vstack">
+    <div class="vstack-cap">accounts, row id = 7</div>
+    <div class="vrow vrow-dead">
+      <span><span class="vval">balance = 900</span> &nbsp; <span class="vmeta">xmin <b>42</b>, xmax <b>57</b></span></span>
+      <span class="vrow-tag">dead, the before-image</span>
+    </div>
+    <div class="vrow vrow-live">
+      <span><span class="vval">balance = 800</span> &nbsp; <span class="vmeta">xmin <b>57</b>, xmax <b>∞</b></span></span>
+      <span class="vrow-tag">live</span>
+    </div>
+  </div>
+
+  <p>
+    Each version carries two stamps: <code>xmin</code>, the transaction that created it, and
+    <code>xmax</code>, the transaction that retired it (<code>∞</code> while it's live). A reader sees
+    whichever version was live when its own transaction began, so readers and writers never block each
+    other. That's <b>MVCC</b>, and the dead version it leaves behind is exactly what an undo restores.
+  </p>
+
+  <figure class="fig wide" data-fig="mvcc">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">Each <b>UPDATE</b> appends a version and stamps the old one dead. The reader still sees the old value. <b>VACUUM</b> cleans up.</figcaption>
+  </figure>
+
+  <p>
+    The last frame is the problem. <code>VACUUM</code>, Postgres's background cleanup, reclaims dead
+    versions, and once it runs the old value is gone. eterDB can't count on a before-image still
+    being in the heap an hour later, so it copies one out of the way at commit time. The before/after
+    pairs come from <b>logical decoding</b>, the same stream that drives logical replication, which
+    reads the <b>WAL</b>: the log Postgres writes every change to before it touches the table itself.
+  </p>
+  <p>
+    The WAL normally records just enough to redo a change, not the whole prior row. For a true
+    before-image, set <code>REPLICA IDENTITY FULL</code> on the tables you want reversible. One
+    statement per table:
+  </p>
+
+<pre class="snip">
+<span class="c-key">ALTER TABLE</span> orders <span class="c-key">REPLICA IDENTITY FULL</span>;   <span class="c-cmt">-- WAL now carries the whole old row</span></pre>
+
+  <p>
+    The figure alternates it on and off. Watch what reaches the history:
+  </p>
+
+  <figure class="fig wide" data-fig="wal">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">The replica identity alternates between <b>FULL</b> and the default. Watch whether the before-image survives, and what it costs.</figcaption>
+  </figure>
+
+  <p>
+    All of this happens <em>after</em> commit. The transaction commits at normal speed and the
+    history record follows from the WAL, read out of process by a sidecar that appends to the
+    metadata store.
+  </p>
+  <p>
+    The replication slot needs operational attention. While the sidecar is down, Postgres retains
+    WAL on its behalf. That retention keeps capture gap-free across restarts (exactly-once, tested),
+    and it is also disk that grows until capture catches up. Watch slot lag when you run the stack
+    yourself.
+  </p>
+  <p>
+    <code>REPLICA IDENTITY FULL</code> logs the entire old row on every update, not just the key.
+    On wide rows or large <code>TEXT</code>/<code>JSONB</code> values that's write amplification, and
+    the meter in the figure shows it. A <code>TOAST</code>ed value is logged in full every time, which
+    is why undo restores it even when the update never touched it. It's per-table: a table you never
+    need to undo keeps the default identity and skips the cost.
+  </p>
+
+</section>
+
+<!-- ───────────────────────── 4 · Read dependencies (the moat) ─────────────────────────
+     The densest section, so it introduces its vocabulary inline, one term per
+     paragraph at the point the argument first needs it. Heap pages, line
+     pointers and ctids are in the "Naming the row that was read" subsection,
+     immediately above the bug they explain. -->
+<section class="doc-section" id="reads">
+  <h2>4. The dependency a backup can't see</h2>
+  <p>
+    This is the part nothing outside the engine can reconstruct. B reads a value A wrote, then writes
+    something derived from it:
+  </p>
+
+<pre class="snip">
+<span class="c-dim">A:</span>  <span class="c-key">UPDATE</span> config <span class="c-key">SET</span> max_qty = <span class="c-num">500</span>;         <span class="c-cmt">-- writes 500</span>
+<span class="c-dim">B:</span>  <span class="c-key">SELECT</span> max_qty <span class="c-key">FROM</span> config;            <span class="c-cmt">-- reads A's 500</span>
+    <span class="c-key">INSERT INTO</span> orders(qty) <span class="c-key">VALUES</span> (<span class="c-num">500</span>);   <span class="c-cmt">-- derives an order from it</span>
+
+<span class="c-wrap">undo A</span>  →  config reverts, but B's order still says <span class="c-num">500</span>   <span class="c-bad">✗ silently wrong</span></pre>
+
+  <p>
+    B now holds a result computed from a value that no longer exists, and nothing flags it. eterDB
+    records these <b>read-dependencies</b> so it can undo B too, or refuse and report it. Reads are
+    the hard part: a write leaves a row, a read leaves <em>nothing</em>, so triggers and CDC never
+    see one. The figure replays the same undo from both views:
+  </p>
+
+  <figure class="fig wide" data-fig="reads">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">The same undo of A from both viewpoints: what a backup knows about B, and what eterDB knows.</figcaption>
+  </figure>
+
+  <p>
+    eterDB doesn't add new tracking for this. Postgres already has it, in the machinery behind
+    <code>SERIALIZABLE</code>. The default <b>isolation level</b>, <code>READ COMMITTED</code>, is
+    loose and fast. <code>SERIALIZABLE</code> instead guarantees a result that some serial order of
+    the transactions would have produced, and aborts a transaction with a <code>40001</code> error
+    rather than let it break that guarantee.
+  </p>
+  <p>
+    Deciding what to abort means knowing who read what. So <b>SSI</b> (Serializable Snapshot
+    Isolation), Postgres's algorithm for <code>SERIALIZABLE</code>, records each read as a
+    <b>predicate lock</b>: a note that this transaction read the rows matching some condition, which
+    blocks nobody. When another transaction writes a version of that data, SSI draws an
+    <b>rw-antidependency edge</b> between the two, meaning "A read some data, and B wrote a version
+    of it A didn't see." That edge is the relationship that makes undoing A alone unsafe, which
+    makes it precisely what eterDB wants.
+  </p>
+  <p>
+    The patch reads the same tracking in <b>observe mode</b>, under ordinary
+    <code>READ COMMITTED</code>:
+  </p>
+  <ul class="spec">
+    <li><b>No behavior change.</b> Queries return what they returned before. Observe mode produces no
+      40001s and no serialization failures.</li>
+    <li><b>Small, flat cost.</b> A few percent of read overhead that doesn't grow with concurrency,
+      and no shared-memory tuning. An earlier design cost far more (<a href="#limits">§8</a>).</li>
+    <li><b>Strict mode is still there.</b> Full <code>SERIALIZABLE</code>, with the usual 40001
+      retries, if you want it.</li>
+  </ul>
+
+  <p class="doc-note">
+    Predicate locks coarsen under memory pressure, from tuples to pages to whole relations, which can
+    make the graph over-approximate. Coarsening only ever <em>adds</em> candidate edges, never drops a
+    real one, so it costs a review, not a missed dependency. <a href="#undo">§5</a> shows how each
+    edge is labelled.
+  </p>
+
+  <h3 id="pages">Naming the row that was read</h3>
+  <p>
+    An edge is only useful if it names a row that can still be found later. Postgres's own name for
+    a row is its physical address, the <b>ctid</b>. A table on disk is a stack of fixed-size
+    <b>8&nbsp;KB pages</b>; each page keeps an array of <b>line pointers</b> at the top, one per row
+    version stored in it, and the ctid is which page plus which slot:
+  </p>
+
+<pre class="snip">
+ctid = <span class="c-num">(0, 2)</span>
+        <span class="c-dim">│   └──</span> slot <span class="c-num">2</span>   line pointer inside the page
+        <span class="c-dim">└──────</span> page <span class="c-num">0</span>   which 8 KB block</pre>
+
+  <p>
+    <b>A ctid is not stable.</b> When a version dies and vacuum frees its slot, an unrelated row can
+    move in, and the same address comes to mean a different row:
+  </p>
+
+  <figure class="fig wide" data-fig="ctid">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">An update, a vacuum, and a slot being reused, one step at a time.</figcaption>
+  </figure>
+
+  <p>
+    Record "row R is at <code>(0,2)</code>", look it up later, and you may read row S. So eterDB
+    identifies a read by the <b>row</b> it touched, as <code>(table, primary key)</code>, never by
+    address. An early build got the timing of that translation wrong.
+  </p>
+
+  <aside class="callout aside-fix" id="fix">
+    <span class="callout-tag">Aside: a bug we caught before release, and the read-time fix</span>
+    <p>
+      In sidecar mode writes have no stable ctid to match against, so a read has to become
+      <code>(table, primary key)</code> at some point. <em>When</em> it turns "a tuple was read" into
+      "row R was read" turns out to matter.
+    </p>
+    <p>
+      An early version resolved each read's primary key at <b>drain time</b>, by reading the physical
+      tuple slot.
+      <a href="https://github.com/eterdb/eterdb/blob/main/test/false-clean.sh"><code>test/false-clean.sh</code></a>
+      caught what happened next, and it's the slot reuse above: by drain time, vacuum or HOT-pruning
+      can have reused that line pointer for a different row. The key resolves to the wrong row, the
+      read-edge is lost, and a genuinely dependent transaction looks clean. The harness found a real
+      miss.
+    </p>
+    <p>
+      The fix is to resolve the key at <b>read time</b>, before vacuum can touch anything. The hook
+      copies the tuple into a per-transaction stash the moment it's read, then resolves the key from
+      that copy at <code>PRE_COMMIT</code>. The copy is immune to vacuum, so the key is always the row
+      that was read. Copies are kept for index-path reads, typically few rows; a bulk seqscan is
+      captured coarsely at table level, so the stash stays small. rw-edge recall is now 100% across
+      the harness's adversarial seeds.
+    </p>
+    <p>
+      A second gap of the same kind hid deeper, and the harness caught that too. An <b>index-only
+      scan</b> over an all-visible page answers from the index and never touches the heap
+      (<code>Heap&nbsp;Fetches:&nbsp;0</code>), so no row is stashed and the read's only trace is a
+      predicate lock on the <em>index</em>. Early harvest skipped it, and a transaction that read
+      through a covering index looked clean. The fix hooks the index scan itself: rows an index
+      returns are stashed and resolved at <code>PRE_COMMIT</code>, so an index-only read is captured
+      as precisely as a heap read. An index that returned nothing still falls back to a table-level
+      edge.
+    </p>
+  </aside>
+</section>
+
+<!-- ───────────────────────── 5 · The undo ───────────────────────── -->
+<section class="doc-section" id="undo">
+  <h2>5. Computing an undo</h2>
+  <p>
+    <code>eter preview &lt;txid&gt;</code> builds the graph from the store and classifies the target.
+    If nothing depends on it, the transaction is <b>clean</b>: eterDB generates the inverse DML from
+    the captured before-images and, with <code>--apply</code>, runs it against your tables. If later
+    transactions read or overwrote those rows, it's <b>dependent</b>, and a blind revert would corrupt
+    them, so eterDB reports the affected set and gives you the choice.
+  </p>
+  <p>
+    History is in a separate store, so an undo spans two databases. The part that must be atomic
+    stays in one: eterDB reads the plan and before-images from the store, then applies <em>all</em>
+    the compensating DML to your database in a <b>single transaction</b>. Both failure modes resolve
+    safely.
+  </p>
+  <ul class="spec">
+    <li><b>Crash mid-undo.</b> One transaction, so it fully commits or fully rolls back. Never
+      half-reverted.</li>
+    <li><b>The inverse DML can't apply</b>, say a unique constraint added since would reject the
+      restored row. The transaction aborts, the undo reports failed, nothing changes.</li>
+  </ul>
+  <p>
+    The revert doesn't trust its own preview either. <code>--apply</code> re-runs classification
+    inside the applying transaction, so a dependent that committed after you previewed blocks a
+    <code>clean_only</code> undo instead of slipping through. Concurrent writers to the same rows
+    queue behind ordinary row locks. A concurrent <em>reader</em> doesn't block: it can read a
+    pre-undo value mid-revert, and that read is captured like any other, so it surfaces as a
+    dependent afterwards rather than disappearing.
+  </p>
+
+  <figure class="fig wide" data-fig="graph">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">The three undo modes in turn: which transactions get reverted, skipped, or left to diverge.</figcaption>
+  </figure>
+
+  <p>
+    A cohort undo (<code>eter undo-cohort</code>) reverses every write since an incident marker. One
+    transaction with a live dependent doesn't abort the batch: eterDB reverts the clean ones and
+    returns <code>reverted_txns</code>, <code>skipped_dependent</code> and <code>skipped_txids</code>,
+    so you or the agent decide about the rest. Every command supports <code>--json</code> and returns
+    stable exit codes.
+  </p>
+
+  <h3>Reading a blocked undo</h3>
+  <p>
+    A yes/no answer isn't enough when a transaction is dependent. You need to see what depends on it.
+    A config write (txid 4821) was read by later transactions before you caught it, and
+    <code>preview</code> returns everything that depends on it:
+  </p>
+  <pre class="codeblock"><span class="c-cmd">$ eter preview 4821 --json</span>{
+  "txid": 4821,
+  "classification": "dependent",
+  "op_count": 1,
+  "ops": [
+    { "table": "public.app_config", "original_op": "U",
+      "compensating_op": "UPDATE", "pk": { "key": "max_order_qty" } }
+  ],
+  "conflicts": [4822, 4825, 4830],
+  "conflict_edges": [
+    { "txid": 4822, "kinds": ["rw"],       "precision": "exact",       "rw_granularity": "tuple" },
+    { "txid": 4825, "kinds": ["rw"],       "precision": "over-approx", "rw_granularity": "relation" },
+    { "txid": 4830, "kinds": ["ww","rw"],  "precision": "exact",       "rw_granularity": "tuple" }
+  ],
+  "precision": {
+    "exact_dependents": 2,
+    "over_approx_dependents": 1,
+    "coarse_tables": ["public.order_audit"]
+  },
+  "external_refs": { "count": 0, "kinds": {}, "samples": [] },
+  "dependency_basis": "write-write exact + read-write from persisted SSI graph"
+}</pre>
+  <p>
+    On a busy database, one write to a hot row (a config, a feature flag) is read by many later
+    transactions, and the dependent set grows fast. Two things keep that from collapsing into
+    "everything depends on everything":
+  </p>
+  <ul class="spec">
+    <li><b>Exact vs over-approximate edges.</b> Every dependent is labelled. <code>exact</code>
+      means it provably read the reverted row. <code>over-approx</code> means it only looks dependent
+      because a writer seq-scanned the table and SSI coarsened the lock to relation level (the dashed
+      edge above). Those are candidates to review, not confirmed reads. <code>coarse_tables</code>
+      names the tables driving them: index the columns those writers scan and the reads become
+      tuple-precise.</li>
+    <li><b>You choose how far to reverse.</b> <code>clean_only</code> (the default) refuses and
+      reports when dependents exist. <code>cascade</code> reverses the dependents too, newest-first.
+      <code>targeted</code> reverses this transaction only and leaves the dependents to diverge. A
+      hot-row write is still reversible; the preview above gives you what you need to pick a
+      mode.</li>
+  </ul>
+  <p>
+    eterDB reverses <em>database</em> state. A reverted row that already charged a card or sent an
+    email surfaces under <code>external_refs</code> in the same preview, so you see the external
+    fallout before you decide.
+  </p>
+</section>
+
+<!-- ───────────────────────── 6 · Storage / time travel ───────────────────────── -->
+<section class="doc-section" id="storage">
+  <h2>6. Schema changes and time travel</h2>
+  <p>
+    Row-level undo can't restore a dropped table. A <code>DROP</code> isn't row data. The heap is
+    gone and no before-image in <code>eter.history</code> covers it, so destructive DDL needs a
+    storage answer. Ours was <b>ZFS</b>: put the data directory on a ZFS dataset, let a sidecar take
+    <b>copy-on-write snapshots</b>, and recover by clone + WAL replay + extract. Snapshots copied
+    nothing up front and clones materialized in milliseconds.
+  </p>
+  <p>
+    Deploying it was the problem. ZFS is a host <b>kernel module</b>, so it wants a privileged
+    container on a Linux host you control (<a href="#deploy">§7</a> has the full tally). Every
+    deployment pays that, always, to cover a rare event.
+  </p>
+  <p>
+    The sidecar was <b>already a point-in-time-recovery engine</b>. WAL archiving,
+    replay to an exact position, standing up a throwaway Postgres, extracting one object: all
+    substrate-agnostic. ZFS supplied two things, a base image and its materialization, and both have
+    standard unprivileged Postgres equivalents. So the sidecar now takes <b>pg_basebackup base
+    backups</b> alongside the WAL archive. Recovery copies the newest backup from before the change,
+    replays archived WAL forward to just before the drop, and pulls the object out of the copy. No
+    root, no kernel module, no privileged container.
+  </p>
+
+  <figure class="fig wide" data-fig="pitr">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">The deploy drops the table. The database is read as of a moment before it. The table comes back from a base backup plus WAL replay.</figcaption>
+  </figure>
+
+  <p>
+    Every recovery reads from a <em>copy</em>. The live database stays up and is never restored over.
+    An event trigger records destructive DDL in <code>eter.ddl_log</code> with the WAL position it
+    happened at, so eterDB knows exactly how far to replay: one instant before the drop.
+  </p>
+  <ul class="spec">
+    <li><b>The substrate is standard Postgres PITR.</b> There is no page store, and destructive DDL
+      is never rewritten inside the database (rename-to-tombstone plus views). Both of those make
+      the production database harder to reason about.</li>
+    <li><b>The backup is only a base.</b> WAL replay covers everything after it, so backup cadence
+      bounds how long a recovery replays, not how much it recovers. Writes made after the last backup
+      and before the drop come back too.</li>
+    <li><b>As-of reads.</b> Read a table as it was before a bad deploy without restoring anything,
+      then revert the deploy's writes. Unrelated writes in the same window survive.</li>
+    <li><b>What it costs.</b> A ZFS clone materialized in milliseconds. A recovery now copies a base
+      backup and replays WAL, which is minutes on a large database, and backups are full physical
+      copies rather than shared blocks. In exchange the storage tier runs anywhere containers run,
+      which every deployment gets and a recovery costs only when one happens.</li>
+    <li><b>History is never pruned.</b> <code>eter.history</code> is append-only. Base backups and
+      WAL segments are retained by default too, so a months-old restore still works. History grows
+      by one row image per write to a tracked table; backups and WAL you can bound with
+      <code>ETER_BACKUP_RETAIN_COUNT</code> or <code>ETER_BACKUP_HORIZON_DAYS</code>.</li>
+  </ul>
+</section>
+
+<!-- ───────────────────────── 7 · How to deploy it ───────────────────────── -->
+<section class="doc-section" id="deploy">
+  <h2>7. Deploying it</h2>
+  <p>
+    eterDB <em>is</em> the Postgres: a patched engine build with observe mode and the
+    <code>eter_ssi</code> background worker, the way Aurora runs on Aurora and Neon runs on Neon. So
+    the thing to know is what deploying it takes. It used to take a lot:
+  </p>
+
+  <div class="yncols">
+    <div class="yncol no">
+      <h3>Then, the ZFS era</h3>
+      <ul>
+        <li>A Linux host you control, with the ZFS kernel module loaded</li>
+        <li>A <b>privileged</b> container with <code>/dev/zfs</code> passed through</li>
+        <li>No serverless runtimes. A kernel module can't ride along in a container.</li>
+      </ul>
+    </div>
+    <div class="yncol yes">
+      <h3>Now, after the PITR swap</h3>
+      <ul>
+        <li>Any <b>container runtime</b>: Kubernetes, Cloud Run, Fargate, Docker Desktop on a Mac</li>
+        <li>One <b>storage volume</b>, shared by the engine (WAL archive) and the storage tier (base backups)</li>
+        <li>Ordinary unprivileged containers. No root, no kernel module, no privileged mode.</li>
+      </ul>
+    </div>
+  </div>
+
+  <p>
+    Concretely: <b>two containers</b> sharing one volume. The <b>engine</b> has the patched build
+    baked in, so you never compile Postgres. It runs with no history trigger on your write path, and
+    pre-creates the capture slot on first boot, which makes change capture gap-free even if the rest
+    of the stack starts late.
+  </p>
+  <p>
+    The <b>control plane</b> bundles everything else behind one supervisor: the <b>capture
+    sidecar</b> from §3, part of the stack and not an option, reading the slot out of process; the
+    <b>orchestrator</b> carrying the storage machinery; and a <b>separate metadata store</b> holding
+    history, the dependency graph and the backup catalog. That metadata has to survive the tenant
+    failing, so it is a database of its own even inside that one container. The CLI and agents talk
+    to <b>one URL</b>, the orchestrator's API. Recoveries take minutes, so they run as managed background jobs: queued,
+    one at a time, reporting crashes instead of hanging a session.
+  </p>
+  <p>
+    <b>The patch</b> is nine files and about 390 lines, tracked against upstream. The isolation and
+    regression suites pass on the patched binary, and thirteen extensions, pgvector included, build
+    against it and pass their own suites. It targets one major at a time; today that's 18.
+  </p>
+  <p class="doc-note">
+    You run it yourself, on anything that runs containers or plain processes: the engine with
+    <code>wal_level=logical</code> and a <code>replication</code> entry in <code>pg_hba.conf</code>
+    (base backups arrive over the replication protocol), plus the control plane next to it. Apps
+    connect over the normal Postgres wire protocol with any driver.
+  </p>
+</section>
+
+<!-- ───────────────────────── 8 · Trade-offs ───────────────────────── -->
+<section class="doc-section" id="limits">
+  <h2>8. Trade-offs and overhead</h2>
+  <p>
+    Capturing <em>writes</em> is nearly free and off the commit path (§3). <em>Observe mode</em> is
+    where the cost was, and the first implementation put it in the wrong place. Profiling found it
+    and took read overhead from ~50% to ~3%.
+  </p>
+
+  <p>
+    <b>The first pass reused Postgres's own machinery.</b> A read leaves no row behind, so there's
+    nothing to trigger on, but Postgres already solves that: SSI tracks who-read-what with predicate
+    locks to enforce <code>SERIALIZABLE</code>. So observe mode registered a serializable transaction
+    under each query, let stock SSI take the locks, and harvested them at commit. Reusing a subsystem
+    hardened over a decade produced a correct graph, at about half the read throughput under load:
+    ~27% overhead at 16 clients, <b>~53% at 100</b>, worsening as concurrency rose.
+  </p>
+  <p>
+    <b>Where the cost actually was.</b> The assumption, including in the ticket that filed it, was
+    that the predicate <em>locks</em> cost the throughput: an SIREAD lock on every read, the machinery
+    that makes native <code>SERIALIZABLE</code> expensive. Profiling a busy backend under a pure read
+    workload, before optimizing anything, put taking the locks at <b>0.2%</b>. Two-thirds of the
+    backend's wall-clock sat in <code>semop</code> at <b>commit</b>, asleep on one cluster-wide lock.
+  </p>
+  <p>
+    The cost was the <em>teardown</em>. Registering that hidden serializable transaction meant
+    unlinking it at commit, which took one global lock (<code>SerializableXactHashLock</code>)
+    exclusively, every time. At tens of thousands of commits a second, every backend queued behind
+    every other, and the wait grows with concurrency, which is the rising curve in the figure below.
+    Three lines of commit-time bookkeeping, and they bite only under load.
+  </p>
+  <p>
+    <b>The fix.</b> Postgres keeps predicate locks in <em>shared</em> memory for one reason: so
+    other backends' writes can detect a conflict against your reads. Observe mode never needs that.
+    Nobody reads another backend's locks, and dependency matching happens later, out of process, by
+    <code>(table,&nbsp;primary key)</code>, so the registration, the shared lock table and the
+    commit-time teardown all come out. Observe now keeps
+    its read-set <b>backend-local</b>. Same coarsening and promotion logic, per-backend memory, no
+    shared transaction to register, nothing to tear down at commit. Nothing touches shared memory on
+    the hot path.
+  </p>
+  <p>
+    Read overhead after the change:
+  </p>
+
+  <figure class="fig wide" data-fig="scaling">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">Read overhead, before and after. The first pass (shared SSI) climbed to ~53% as concurrency rose. Backend-local capture is flat at ~2-3% from 16 to 100 clients. Same binary, observe on vs off, interleaved and order-controlled on one warm cluster.</figcaption>
+  </figure>
+
+  <p>
+    The workload is pgbench point-select traffic (<code>-S</code>) at 16 to 100 clients against the production-shape
+    (assertions-off, <code>-O2</code>) build, observe on vs off on the same binary. The harness is
+    <a href="https://github.com/eterdb/eterdb/blob/main/test/observe-read-scaling.sh"><code>test/observe-read-scaling.sh</code></a>.
+    Writes improved too, since the same teardown is gone for them, settling around ~13%. That
+    residual is the work of streaming the read-set out at commit.
+  </p>
+
+  <table class="dtable">
+    <caption>Throughput overhead by capture path, first implementation against the current one, at 100 concurrent clients.</caption>
+    <thead>
+      <tr><th scope="col">Path (@100 clients)</th><th scope="col">First pass (shared SSI)</th><th scope="col">Now (backend-local)</th></tr>
+    </thead>
+    <tbody>
+      <tr><th scope="row">Write capture (logical decoding)</th><td class="t-off">~10%, off commit path</td><td class="t-off">unchanged</td></tr>
+      <tr><th scope="row">Observe, writes</th><td>~15%</td><td class="t-flat">~13%, flat</td></tr>
+      <tr><th scope="row">Observe, reads</th><td class="t-rise">~53%, rising</td><td class="t-flat">~3%, flat</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    The completeness harness holds <b>100% read-edge recall</b> across its adversarial seeds, and the
+    patch passes the isolation (119/119) and regression (231/231) suites on PG&nbsp;18 with observe
+    off. Flip observe on and a read-heavy workload writes tens of thousands of read-set records to
+    disk. Flip it off and it writes zero.
+  </p>
+  <p>
+    <b>Observe serializes parallel query.</b> Capture is in one backend and a parallel worker's
+    reads would bypass it, so with observe on the planner runs every query without parallel workers.
+    Point reads and OLTP writes never notice. A big analytical aggregate that used four workers
+    does, and for that workload the lost parallelism dominates the 2-3%. It is settable per role: a
+    role whose reads need no capture (a BI tool, a read-only analyst) turns observe off for itself
+    and keeps full parallelism. Capturing from parallel workers is future engine work.
+  </p>
+</section>
+
+<!-- ───────────────────────── 9 · What's next ───────────────────────── -->
+<section class="doc-section" id="next">
+  <h2>9. What's next</h2>
+  <p>
+    <b>More profiling.</b> Mixed read/write workloads, larger datasets, longer runs, plus the write
+    path's remaining lever: moving commit-time read-set emission off the backend entirely.
+  </p>
+  <p>
+    <b>Testing at realistic parameters.</b> The recovery suite already runs against real application
+    schemas: an inventory system at ~1M rows with months of backdated history, a CRM with cross-table
+    cohorts. Next are the dials production turns: bigger databases, longer histories, higher
+    churn, more concurrent writers.
+  </p>
+  <p>
+    <b>Shrinking the dependency radius.</b> Today's dial is <a href="#undo">§5</a>'s exact/over-approx
+    split plus the index hint. The next one is per-source scoping: keeping reads from a read-only
+    analytics role out of the graph, so the dashboard that scans every table doesn't surface as a
+    dependent of every write.
+  </p>
+  <p>
+    <b>Storage-compute separation.</b> Today's substrate is unprivileged and runs anywhere
+    (<a href="#storage">§6</a>), and a restore is a replay, so recovery time grows with how far back
+    you reach. The end-state is a page server in the Neon mold, retaining every version of every page
+    and serving reads as of any point in time. "This table as of 13:59" becomes a lookup rather than
+    a replay, and recovery drops from minutes to seconds. It is a large piece of engineering, so it
+    comes after the launch.
+  </p>
+</section>
+
+<!-- ───────────────────────── Further reading ─────────────────────────
+     The sources this page compresses, for readers who want the full depth:
+     the Postgres internals it draws on, the transaction/isolation theory, the
+     SSI paper behind read-dependency capture, and the PITR substrate docs. -->
+<section class="doc-section" id="further-reading">
+  <h2>Further reading</h2>
+  <p>
+    Everything above is compressed to fit one scroll. These are the sources behind it.
+  </p>
+  <ul class="reading-list">
+    <li>
+      <a class="reading-title" href="https://postgrespro.com/community/books/internals" target="_blank" rel="noopener">PostgreSQL&nbsp;14 Internals&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">Egor Rogov (free book)</span>
+      <span class="reading-note">The MVCC, tuple versioning and WAL chapters behind
+        <a href="#writes">§3</a>, and the page layout behind <a href="#pages">§4</a>.</span>
+    </li>
+    <li>
+      <a class="reading-title" href="https://dsf.berkeley.edu/papers/fntdb07-architecture.pdf" target="_blank" rel="noopener">Architecture of a Database System&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">Hellerstein, Stonebraker &amp; Hamilton (survey)</span>
+      <span class="reading-note">How a relational engine is assembled from parts. The backdrop to
+        <a href="#arch">§2</a>.</span>
+    </li>
+    <li>
+      <a class="reading-title" href="https://dataintensive.net" target="_blank" rel="noopener">Designing Data-Intensive Applications&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">Martin Kleppmann</span>
+      <span class="reading-note">Chapter&nbsp;7 on transactions and isolation levels, including the
+        serializability that read-dependency tracking builds on.</span>
+    </li>
+    <li>
+      <a class="reading-title" href="https://www.postgresql.org/docs/current/logicaldecoding.html" target="_blank" rel="noopener">Logical Decoding&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">PostgreSQL documentation</span>
+      <span class="reading-note">The change stream the capture sidecar reads for every write's
+        before and after image (<a href="#writes">§3</a>).</span>
+    </li>
+    <li>
+      <a class="reading-title" href="https://drkp.net/papers/ssi-vldb12.pdf" target="_blank" rel="noopener">Serializable Snapshot Isolation in PostgreSQL&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">Ports &amp; Grittner (VLDB 2012)</span>
+      <span class="reading-note">The predicate-lock and rw-conflict machinery eterDB reuses
+        (<a href="#reads">§4</a>).</span>
+    </li>
+    <li>
+      <a class="reading-title" href="https://www.postgresql.org/docs/current/continuous-archiving.html" target="_blank" rel="noopener">Continuous Archiving and Point-in-Time Recovery&nbsp;<span class="reading-ext" aria-hidden="true">↗</span></a>
+      <span class="reading-meta">PostgreSQL documentation</span>
+      <span class="reading-note">The base-backup plus WAL-replay substrate behind schema recovery
+        and time travel (<a href="#storage">§6</a>).</span>
+    </li>
+  </ul>
+</section>
+
+<!-- ───────────────────────── CTA ───────────────────────── -->
+<section class="doc-cta" id="get-started">
+  <h2>Try it.</h2>
+  <div class="cta-actions">
+    <a class="btn btn-lg" href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">Get&nbsp;Started</a>
+  </div>
+  <div class="cta-star">
+    <a class="github-button" href="https://github.com/eterdb/eterdb" data-size="large"
+      data-show-count="true" aria-label="Star eterdb/eterdb on GitHub">Star</a>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="11" fill="currentColor"/>
+        <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889"/>
+        <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z"/>
+      </svg>
+    </span>
+    <span>eterDB</span>
+  </div>
+  <p class="footer-tag">Postgres with undo.</p>
+  <div class="footer-meta"><a href="/">Home</a><a href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">GitHub</a><span>© <span id="year"></span> eterDB</span><span>Apache 2.0</span></div>
+</footer>
+
+<!-- The interactive illustrations. Vanilla canvas, no runtime dependency:
+     this page no longer pulls Mermaid; the diagrams are hand-built in tech.js. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="/header.js" defer></script>
+<script src="/tech.js" defer></script>
+</body>
+</html>

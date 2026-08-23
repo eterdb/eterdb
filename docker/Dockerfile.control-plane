@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+#
+# EterDB control-plane image, the metadata store + capture sidecar + orchestrator
+# bundled into ONE container so the whole stack is two deployment units: the
+# tenant engine (Dockerfile.engine) and this control plane. The split that
+# matters, durable recovery metadata kept OUTSIDE the tenant, is preserved:
+# the meta Postgres here is a separate cluster from the engine.
+#
+# Three processes run under a supervisor (supervisord as PID 1, each program
+# drops to the postgres user):
+#   meta          a Postgres cluster owning history/graph/ddl_log/backup catalog
+#   capture       the logical-decoding capture sidecar (reads the engine's slot)
+#   orchestrator  the /v1 API + job runner + storage maintenance scheduler
+#
+# Built FROM the engine image because the orchestrator stands throwaway Postgres
+# instances up on restored base backups (it needs patched PG server binaries of
+# the same major) and because the meta store reuses those same binaries.
+#
+#   docker build -f docker/Dockerfile.control-plane \
+#     --build-arg ENGINE_IMAGE=eterdb-engine:pg18 -t eterdb-control-plane:pg18 .
+ARG ENGINE_IMAGE=eterdb-engine:pg18
+
+# ---- build stage: the three Go binaries ------------------------------------
+FROM golang:1.25-bookworm AS build
+WORKDIR /src/sidecars
+COPY sidecars/go.mod sidecars/go.sum ./
+RUN go mod download
+COPY sidecars/ ./
+RUN CGO_ENABLED=0 go build -o /out/eter-capture ./capture \
+ && CGO_ENABLED=0 go build -o /out/eter-storage ./storage \
+ && CGO_ENABLED=0 go build -o /out/eter-orchestrator ./orchestrator
+
+# ---- runtime stage: engine image + supervisor + the daemons ----------------
+FROM ${ENGINE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/eter-capture /out/eter-storage /out/eter-orchestrator /usr/local/bin/
+COPY docker/cp-meta-entrypoint.sh \
+     docker/cp-capture-entrypoint.sh \
+     docker/cp-orchestrator-entrypoint.sh /usr/local/bin/
+COPY docker/supervisord.conf /etc/eter/supervisord.conf
+RUN chmod +x /usr/local/bin/cp-meta-entrypoint.sh \
+             /usr/local/bin/cp-capture-entrypoint.sh \
+             /usr/local/bin/cp-orchestrator-entrypoint.sh \
+ && mkdir -p /var/lib/eter-meta \
+ && chown -R postgres:postgres /var/lib/eter-meta
+
+# Inherited from the engine image: PATH (…/pgsql/bin), and the eter SQL at
+# /opt/eter/eter.sql. Add the orchestrator/storage runtime knobs (same
+# values the orchestrator needs) plus the meta cluster location.
+ENV ETER_PG_BINDIR=/usr/local/pgsql/bin \
+    ETER_BACKUP_DIR=/var/lib/eter/backups \
+    ETER_SQL_FILE=/opt/eter/eter.sql \
+    ETER_PORT=4400 \
+    META_PGDATA=/var/lib/eter-meta/data \
+    META_DB=eter_meta
+
+EXPOSE 4400
+# supervisord runs as root (PID 1, signal forwarding); each program drops to the
+# postgres user via `user=postgres` in the config.
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/eter/supervisord.conf"]

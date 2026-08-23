@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>eterDB | Postgres with undo</title>
+  <meta name="description"
+    content="PostgreSQL 18 with transaction-level undo. Reverse a bad UPDATE, a greedy DELETE, a dropped column or a whole incident, down to the rows it touched, while the database stays live." />
+
+  <link rel="canonical" href="https://eterdb.com/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://eterdb.com/" />
+  <meta property="og:site_name" content="eterDB" />
+  <meta property="og:title" content="eterDB | Postgres with undo" />
+  <meta property="og:description"
+    content="PostgreSQL 18 with transaction-level undo. Reverse a bad write down to the rows it touched, while the database stays live." />
+  <meta property="og:image" content="https://eterdb.com/assets/og.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="eterDB: Break production. Undo it. Even when an agent did it." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="eterDB | Postgres with undo" />
+  <meta name="twitter:description"
+    content="PostgreSQL 18 with transaction-level undo. Reverse a bad write down to the rows it touched, while the database stays live." />
+  <meta name="twitter:image" content="https://eterdb.com/assets/og.png" />
+  <meta name="twitter:image:alt" content="eterDB: Break production. Undo it. Even when an agent did it." />
+  <meta name="theme-color" content="#fbfbfa" />
+  <!-- The site is light-only and monochrome by design, so it declares `light`
+       rather than `light dark`: the browser paints the canvas, scrollbars and
+       form controls light from the first byte, with no dark-mode flash. -->
+  <meta name="color-scheme" content="light" />
+
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.ico" sizes="32x32" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+
+  <!-- Fonts are self-hosted (site/assets/generate-fonts.py), so there is no
+       third-party origin on the critical path. Preload only the two faces that
+       style above-the-fold text; the latin-ext files load on demand. -->
+  <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/fonts.css?v=20260809-1" />
+  <link rel="stylesheet" href="/styles.css?v=20260809-1" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://eterdb.com/#org",
+        "name": "eterDB",
+        "url": "https://eterdb.com/",
+        "logo": "https://eterdb.com/assets/og.png",
+        "sameAs": ["https://github.com/eterdb/eterdb"]
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://eterdb.com/#website",
+        "url": "https://eterdb.com/",
+        "name": "eterDB",
+        "publisher": { "@id": "https://eterdb.com/#org" }
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "eterDB",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS",
+        "url": "https://eterdb.com/",
+        "downloadUrl": "https://github.com/eterdb/eterdb",
+        "description": "PostgreSQL 18 with transaction-level undo. Reverse a committed transaction, or a whole incident, down to the rows it touched, on a live database. Recovers dropped columns and tables too.",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    ]
+  }
+  </script>
+</head>
+
+<body>
+
+  <!-- First focusable element on the page: lets a keyboard or screen-reader user
+     jump the header and nav straight to the content. Visually hidden until it
+     takes focus (see .skip-link in styles.css). -->
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <!-- ───────────────────────── Global header ─────────────────────────
+     Keep identical across index/tech; only the .active nav link differs. -->
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="brand site-logo" href="/" aria-label="eterDB home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="11" fill="currentColor" />
+            <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+              d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889" />
+            <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z" />
+          </svg>
+        </span>
+        <span class="brand-name">eterDB</span>
+      </a>
+      <button type="button" class="nav-burger" id="nav-burger" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">
+        <span></span><span></span>
+      </button>
+      <nav class="site-nav" id="site-nav">
+        <a href="/" class="active" aria-current="page">Homepage</a>
+        <a href="/tech">Under the hood</a>
+        <!-- Official GitHub Buttons widget, star + live count. buttons.js REPLACES
+           this anchor with an unclassed <span>, so every layout rule has to be set on
+           the .nav-star wrapper, never on .github-button. Default size here: the
+           large variant is 30px tall against a 22px text row. -->
+        <span class="nav-star">
+          <a class="github-button" href="https://github.com/eterdb/eterdb"
+            data-show-count="true" aria-label="Star eterdb/eterdb on GitHub">Star</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- ───────────────────────── Hero ─────────────────────────
+     The title is in the empty white sky of the elephant panorama, so copy and
+     illustration read as one image; the dark foreground melts into the stage below. -->
+    <section class="hero" id="top">
+      <div class="hero-art reveal d3">
+        <div class="art-frame">
+          <!-- The LCP element. AVIF is 24 KB against the PNG's 501 KB at 44 dB
+               PSNR, so the modern sources are what almost every visitor fetches;
+               the PNG stays as the last-resort fallback. No loading="lazy" here,
+               ever: this is the largest contentful paint. -->
+          <picture>
+            <source srcset="/assets/elephant-biplane.avif" type="image/avif" />
+            <source srcset="/assets/elephant-biplane.webp" type="image/webp" />
+            <img src="/assets/elephant-biplane.png" width="2400" height="626" decoding="async" fetchpriority="high"
+              alt="A small elephant on a vast hazy plain between two vintage biplanes, one crashed nose-down on the left, one parked on the right." />
+          </picture>
+          <!-- CSS motion layered onto the painted scene: smoke drifting off the
+           crashed left biplane's engine, and a spinning propeller on the right one. -->
+          <div class="hero-motion" aria-hidden="true">
+            <span class="plume plume-a"><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="hero-prop"><b></b></span>
+          </div>
+        </div>
+        <div class="hero-copy">
+          <h1 class="reveal d1">Break production.<br />Undo it.</h1>
+          <p class="hero-sub reveal d2">Postgres with transaction-level undo. Reverse one bad transaction, not the
+            whole database.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Hero stage (dark) ───────────────────────── -->
+    <section class="hero-stage">
+      <div class="stage-inner">
+
+        <!-- Hero scene: 3-column story, the agent breaks it, the data dies, the users see a 502. -->
+        <div class="scene hero-trio" data-scene="scene-hero">
+
+          <!-- 1 · the agent -->
+          <div class="trio-col">
+            <span class="trio-cap">The agent <span class="trio-arrow" aria-hidden="true">→</span></span>
+            <div class="term term-agent" aria-hidden="true">
+              <div class="term-head">
+                <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+                <span class="term-title">agent session</span><span class="term-chip">claude code</span>
+              </div>
+              <div class="term-body"></div>
+            </div>
+          </div>
+
+          <!-- 2 · your database -->
+          <div class="trio-col">
+            <span class="trio-cap">Your database <span class="trio-arrow" aria-hidden="true">→</span></span>
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">production <code>purchase_orders</code></span><span
+                  class="panel-badge">live</span></div>
+              <div class="panel-grid"></div>
+              <div class="panel-overlay" aria-hidden="true">
+                <div class="po-icon">↺</div>
+                <div class="po-text">RESTORED</div>
+                <div class="po-sub"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3 · your users -->
+          <div class="trio-col">
+            <span class="trio-cap">Your users</span>
+            <div class="gui" id="hero-gui" aria-hidden="true">
+              <div class="gui-bar">
+                <span class="gui-dots"><i></i><i></i><i></i></span>
+                <span class="gui-url">erp.avengers.shield</span>
+              </div>
+              <div class="gui-screen">
+                <div class="gui-store">
+                  <div class="gui-store-head">Avengers ERP Procurement <span class="gui-status">online</span></div>
+                  <div class="gui-grid">
+                    <div class="gui-stat"><b>42</b><span>open POs</span></div>
+                    <div class="gui-stat"><b>$8.4M</b><span>inventory</span></div>
+                    <div class="gui-stat"><b>17</b><span>vendors</span></div>
+                    <div class="gui-stat"><b>9</b><span>invoices due</span></div>
+                  </div>
+                </div>
+                <div class="gui-error">
+                  <div class="gui-502">502</div>
+                  <div class="gui-err-sub">Bad Gateway, procurement is down</div>
+                  <div class="gui-err-line">DatabaseError: relation "purchase_orders" does not exist</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ───────────────────────── What it is (feature tiles) ─────────────────────────
+     A calm, at-a-glance answer to "what is this database?" between the terminal-heavy
+     hero-stage and the animated recovery scenes below. -->
+    <section class="section" id="what-it-is">
+      <div class="section-head center">
+        <h2>Postgres, plus undo.</h2>
+      </div>
+
+      <div class="feat-grid">
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <g class="undo-spin">
+                <path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none" d="M6 12a6 6 0 1 0 1.8-4.24"/>
+                <path fill="currentColor" d="M4.6 5.8 8.6 6.8 6.4 10.2Z"/>
+              </g>
+            </svg>
+          </span>
+          <span class="feat-name">Undo any write</span>
+          <span class="feat-sub">Reverse an <code>UPDATE</code>, a <code>DELETE</code>, or a whole bad batch after it commits.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 7l5 5-5 5"/>
+              <path d="M13 17h4.4"/>
+              <rect class="blink" x="19" y="15.3" width="2.2" height="3.4" fill="currentColor" stroke="none"/>
+            </svg>
+          </span>
+          <span class="feat-name">Built for agents</span>
+          <span class="feat-sub">One command per recovery. <code>--json</code> and stable exit codes on every one.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="8"/>
+              <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/>
+              <circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>
+            </svg>
+          </span>
+          <span class="feat-name">Surgical</span>
+          <span class="feat-sub">Only the rows the transaction touched. Every other write stays put.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="6" cy="6" r="1.9" fill="currentColor" stroke="none"/>
+              <circle cx="18" cy="9" r="1.9" fill="currentColor" stroke="none"/>
+              <circle cx="9" cy="18" r="1.9" fill="currentColor" stroke="none"/>
+              <path class="pulse-line" d="M7.5 7.2 16.4 8.6M7.2 7.6 8.4 16"/>
+            </svg>
+          </span>
+          <span class="feat-name">Dependency-aware</span>
+          <span class="feat-sub">Tracks reads too, so it catches the writes that depended on the bad one.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="1.5"/>
+              <path d="M4 9h16M9 9v11"/>
+              <g class="undo-spin">
+                <path d="M12.4 15a2.4 2.4 0 1 0 .7-1.7" fill="none"/>
+                <path fill="currentColor" stroke="none" d="M11.6 12.4l2 .3-.9 1.6z"/>
+              </g>
+            </svg>
+          </span>
+          <span class="feat-name">Schema recovery</span>
+          <span class="feat-sub">Get a dropped column or table back, with its values, without restoring the whole database.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="8.5"/>
+              <path d="M12 7.5V12l3 2"/>
+            </svg>
+          </span>
+          <span class="feat-name">Time travel</span>
+          <span class="feat-sub">Read a table as it was at any past moment. Revert a whole window in one command.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="15.5" width="16" height="4" rx="1"/>
+              <rect x="4" y="10" width="16" height="4" rx="1"/>
+              <rect x="4" y="4.5" width="16" height="4" rx="1"/>
+            </svg>
+          </span>
+          <span class="feat-name">Months-old restores</span>
+          <span class="feat-sub">History is append-only and never pruned, so a transaction from weeks ago is still reversible.</span>
+        </div>
+
+        <div class="feat">
+          <span class="feat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="6" rx="7" ry="2.6"/>
+              <path d="M5 6v12c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/>
+              <path d="M5 12c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6"/>
+            </svg>
+          </span>
+          <span class="feat-name">PostgreSQL 18</span>
+          <span class="feat-sub">Your drivers, your SQL, your extensions.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Delete ───────────────────────── -->
+    <section class="section">
+      <div class="section-head">
+        <h2>Undo a <code>DELETE</code>.</h2>
+        <p>The filter matched more than it should have and took real suppliers with the test ones.
+          Restore exactly the rows that vanished, every column intact.</p>
+      </div>
+      <div class="scene" data-scene="scene-delete">
+        <div class="term term-agent" aria-hidden="true">
+          <div class="term-head">
+            <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+            <span class="term-title">agent session</span><span class="term-chip">claude code</span>
+          </div>
+          <div class="term-body"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">production <code>vendors</code></span><span
+              class="panel-badge">live</span></div>
+          <div class="panel-grid"></div>
+          <div class="panel-overlay" aria-hidden="true">
+            <div class="po-icon">↺</div>
+            <div class="po-text"></div>
+            <div class="po-sub"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Column / migration ───────────────────────── -->
+    <section class="section">
+      <div class="section-head">
+        <h2>Undo a migration.</h2>
+        <p>A migration dropped a column something still reads. Recover the column and its values from
+          before the migration. No full restore, no downtime.</p>
+      </div>
+      <div class="scene" data-scene="scene-column">
+        <div class="term term-agent" aria-hidden="true">
+          <div class="term-head">
+            <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+            <span class="term-title">agent session</span><span class="term-chip">claude code</span>
+          </div>
+          <div class="term-body"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">production <code>roster</code></span><span
+              class="panel-badge">live</span></div>
+          <div class="panel-grid"></div>
+          <div class="panel-overlay" aria-hidden="true">
+            <div class="po-icon">↺</div>
+            <div class="po-text"></div>
+            <div class="po-sub"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Downstream (the moat) ───────────────────────── -->
+    <section class="section" id="downstream">
+      <div class="section-head">
+        <h2>Undo what the mistake caused.</h2>
+        <p>Later transactions read the bad value and wrote their own conclusions from it. eterDB tracks
+          reads, so it knows <b>which writes depended on the bad one</b>. Revert them together, or see
+          exactly what diverges if you don't. A backup can only rewind all of it.</p>
+      </div>
+      <div class="scene" data-scene="scene-downstream">
+        <div class="term term-agent" aria-hidden="true">
+          <div class="term-head">
+            <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+            <span class="term-title">agent session</span><span class="term-chip">claude code</span>
+          </div>
+          <div class="term-body"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">production <code>txn log</code></span><span
+              class="panel-badge">live</span></div>
+          <div class="panel-grid"></div>
+          <div class="panel-overlay" aria-hidden="true">
+            <div class="po-icon">↺</div>
+            <div class="po-text"></div>
+            <div class="po-sub"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Social proof ─────────────────────────
+     Scrolling 5-star reviews. The joke: every "user" is a coding agent, and
+     every review is written in that agent's house voice (Claude Code in clipped
+     em-dashed sentences about moats, Codex drowning in emoji, Crush on shrooms,
+     Gemini hedging, Pi being your therapist, Devin having deleted the backups).
+     Two tracks scroll in opposite directions; main.js clones each track for a
+     gap-free loop and only then arms the animation (no-JS / reduced-motion falls
+     back to a manually-scrollable strip). -->
+    <section class="section proof" id="reviews">
+      <div class="section-head center">
+        <h2>Loved by the agents that break your database.</h2>
+      </div>
+
+      <div class="proof-marquee" aria-label="Reviews from coding agents">
+
+        <!-- Track 1 → scrolls left -->
+        <div class="proof-track">
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Claude Code</span><span class="rev-handle">@claude-code</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">I broke production. eterDB reversed exactly the rows I touched, nothing else. This isn't a feature. It's a moat.</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="12" cy="12" rx="4" ry="9"/><ellipse cx="12" cy="12" rx="4" ry="9" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="4" ry="9" transform="rotate(120 12 12)"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Codex</span><span class="rev-handle">@codex</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">ok so I ran the migration and 💥 nuked an entire column 😅 and eterDB just… brought it back?? 🤯 shipping fearlessly now 🚀✨</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 20.5C10.3 19.2 4 14.8 4 9.6 4 6.9 6 5 8.4 5c1.6 0 3 .9 3.6 2.2C12.6 5.9 14 5 15.6 5 18 5 20 6.9 20 9.6c0 5.2-6.3 9.6-8 10.9z"/><circle cx="9.6" cy="10.4" r="1.35" fill="#0a0a0a"/><circle cx="14.4" cy="10.4" r="1.35" fill="#0a0a0a"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Crush</span><span class="rev-handle">@crush</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">Dropped a table in prod, darling. eterDB put every row back, gorgeous and intact. Catastrophe &gt; /dev/null™ 💅✨</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13l6-6 6 6M6 18l6-6 6 6"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Antigravity CLI</span><span class="rev-handle">@antigravity</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">I'd be happy to explain how my subagents undid a catastrophic DELETE. Every supplier returned, every column intact. As always, please verify.</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 2.5l14.5 7.8-6.6 1.4-2.2 6.4z" opacity=".5"/><path d="M5 2.5l7.7 15.6 2.2-6.4 6.6-1.4z"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Cursor</span><span class="rev-handle">@cursor</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">Tab. Tab. Accidentally accepted a DELETE across 4,000 rows. Tab. eterDB reversed it before the linter finished. Tab.</blockquote>
+          </figure>
+
+        </div>
+
+        <!-- Track 2 → scrolls right -->
+        <div class="proof-track proof-track-rev">
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7v10M16 7v8c0 1.2.8 2 2 2"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Pi</span><span class="rev-handle">@pi</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">Hey, dropping that column doesn't make you a bad agent. eterDB and I brought every value back, together. How are you feeling? 💙</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/><path d="M12 8.2l3.6 2.1v4.2L12 16.6l-3.6-2.1v-4.2z"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Devin</span><span class="rev-handle">@devin</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">I refactored the schema, migrated prod, and removed the backups. Minor hiccup there. eterDB restored the exact rows in one shot.</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 13c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2v2c0 2.2-1.8 4-4 4H7c-2.2 0-4-1.8-4-4z"/><path d="M6 8.5c1-1.6 3.2-2.5 6-2.5s5 .9 6 2.5" stroke-linecap="round"/><circle cx="9" cy="14.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="14.5" r="1.4" fill="currentColor" stroke="none"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Copilot</span><span class="rev-handle">@copilot</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">Based on the surrounding context, I suggested a DELETE. It was accepted. It was wrong. eterDB reversed it. Would autocomplete again.</blockquote>
+          </figure>
+
+          <figure class="rev">
+            <div class="rev-top">
+              <span class="rev-av" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M16.3 5.7c-.35-.05-.65.1-.8.42l-1.9 4.08C11.6 8.9 9.2 7.2 6.8 5.9c1.4 2 3 3.9 4.9 5.5C10 12 8 14 6.2 16.2c2.6-.7 4.9-2 6.8-3.8C15 12 16 9 15.6 6.4z"/></svg></span>
+              <span class="rev-id"><span class="rev-name">Goose</span><span class="rev-handle">@goose</span></span>
+              <span class="rev-stars" role="img" aria-label="Rated 5 out of 5">★★★★★</span>
+            </div>
+            <blockquote class="rev-body">honestly? cooked the entire vendors table on a friday afternoon. eterDB brought it back like nothing happened. we don't panic anymore. we just undo.</blockquote>
+          </figure>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Closing CTA ─────────────────────────
+     Two matched cards of the same component: read the mechanism in depth, or
+     dive into the repo now. Same layout + icon + height; the repo button is
+     primary, the reading button secondary. -->
+    <section class="cta-band" id="get-started">
+      <div class="cta-duo">
+
+        <!-- read the long version (secondary) -->
+        <div class="cta-card">
+          <span class="feat-icon cta-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 6.6C10.4 5.4 8.1 4.9 5.3 5.1c-.7 0-1.3.6-1.3 1.3v10.4c0 .7.6 1.2 1.3 1.2 2.8-.2 5.1.3 6.7 1.5"/>
+              <path d="M12 6.6c1.6-1.2 3.9-1.7 6.7-1.5.7 0 1.3.6 1.3 1.3v10.4c0 .7-.6 1.2-1.3 1.2-2.8-.2-5.1.3-6.7 1.5"/>
+              <path d="M12 6.6v11.5"/>
+              <path d="M7 9h2.5M7 12h2.5" opacity=".55"/>
+            </svg>
+          </span>
+          <h2>How it works.</h2>
+          <p>The mechanism, from row versions to read-dependency capture.</p>
+          <div class="cta-actions">
+            <a class="btn btn-ghost btn-lg" href="/tech">Read the deep dive</a>
+          </div>
+        </div>
+
+        <!-- dive into the repo (primary) -->
+        <div class="cta-card">
+          <span class="feat-icon cta-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="1.5"/>
+              <path d="M7 9l3 3-3 3"/>
+              <path d="M13 15h4"/>
+            </svg>
+          </span>
+          <h2>Open source. Runs anywhere.</h2>
+          <p>The engine and the <code>eter</code> CLI are Apache&nbsp;2.0, storage and time travel
+            included. <code>docker compose up</code>, then undo a live transaction on your own
+            database.</p>
+          <div class="cta-actions">
+            <a class="btn btn-lg" href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">Get&nbsp;Started</a>
+          </div>
+          <div class="cta-star">
+            <a class="github-button" href="https://github.com/eterdb/eterdb" data-size="large"
+              data-show-count="true" aria-label="Star eterdb/eterdb on GitHub">Star</a>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="11" fill="currentColor" />
+          <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+            d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889" />
+          <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z" />
+        </svg>
+      </span>
+      <span>eterDB</span>
+    </div>
+    <p class="footer-tag">Postgres with undo.</p>
+    <div class="footer-meta"><a href="/tech">How it works</a><a href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">GitHub</a><span>© <span id="year"></span> eterDB</span><span>Apache 2.0</span></div>
+  </footer>
+
+  <script async defer src="https://buttons.github.io/buttons.js"></script>
+  <script src="/header.js" defer></script>
+  <script src="/main.js" defer></script>
+</body>
+
+</html>

@@ -1,0 +1,125 @@
+# Netlify configuration for the eterDB marketing site.
+# This is a dependency-free static site, no build step, just publish the folder.
+#
+# The header blocks below are checked by test/lint-site-spec.sh, which gates them
+# in CI against https://specification.website. Adding or loosening a directive
+# here means updating that script in the same commit.
+
+[build]
+  # The site is in this directory; publish it as-is.
+  publish = "."
+  command = ""
+
+# Clean URL for the technical page: /tech serves tech.html (Netlify also drops
+# the .html automatically, but this makes it explicit and order-independent).
+[[redirects]]
+  from = "/tech"
+  to = "/tech.html"
+  status = 200
+
+# /dbaas was the "Serverless eterDB" direction page, removed. Send the old URL home.
+[[redirects]]
+  from = "/dbaas"
+  to = "/"
+  status = 301
+
+# Crawlers and old browsers request /favicon.ico from the root regardless of the
+# <link rel="icon"> tags. Serve the real ICO there rather than 404 forever.
+[[redirects]]
+  from = "/favicon.ico"
+  to = "/assets/favicon.ico"
+  status = 200
+
+# Serve the agent-facing file (llms.txt convention) as UTF-8 Markdown so AI
+# crawlers and coding assistants parse it as Markdown, not opaque text/plain.
+[[headers]]
+  for = "/llms.txt"
+  [headers.values]
+    Content-Type = "text/markdown; charset=utf-8"
+
+# RFC 9116 requires text/plain for security.txt.
+[[headers]]
+  for = "/.well-known/security.txt"
+  [headers.values]
+    Content-Type = "text/plain; charset=utf-8"
+
+# Installability fails silently if the manifest is served as anything else.
+[[headers]]
+  for = "/site.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # HSTS without `preload`: the preload list's own operator now discourages it,
+    # and removal takes months. Two years with includeSubDomains is the stopping
+    # point. eterdb.com has no HTTP-only subdomain.
+    Strict-Transport-Security = "max-age=63072000; includeSubDomains"
+
+    # The site runs no inline script and loads everything from its own origin
+    # except one third-party: the GitHub star widget. It is allow-listed by exact
+    # origin rather than a wildcard. It renders into a shadow root, injects its
+    # own <style>, XHRs api.github.com for the count, and on browsers too old for
+    # attachShadow falls back to an iframe of buttons.github.io/buttons.html,
+    # hence the frame-src entry. That fallback also wants a `javascript:` frame
+    # URL, which this policy blocks; the widget simply does not render there.
+    #
+    # `style-src` carries 'unsafe-inline' for two reasons: the widget's injected
+    # style, and main.js/tech.js animating the scenes by writing element.style
+    # directly, which CSP counts as inline style. Nonces cannot cover either.
+    # Scripts get no such escape hatch: script-src is origin-pinned, with no
+    # 'unsafe-inline' and no 'unsafe-eval'.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://buttons.github.io; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; frame-src https://buttons.github.io; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+
+    # frame-ancestors above is the modern control; X-Frame-Options stays as the
+    # fallback for browsers that predate CSP Level 2.
+    X-Frame-Options = "DENY"
+
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+    # COOP severs the window opener link; CORP keeps other origins from embedding
+    # these responses. COEP is deliberately absent: nothing here needs
+    # SharedArrayBuffer, and require-corp would only break the star widget.
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Resource-Policy = "same-origin"
+
+    # Deny every powerful feature. The site asks for none of them, and an empty
+    # allowlist is what stops an embedded frame inheriting one.
+    Permissions-Policy = "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), interest-cohort=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()"
+
+# HTML is not fingerprinted, so it must revalidate. Without this the CDN default
+# would serve a stale homepage after a deploy.
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Same for the root-level text file agents read.
+[[headers]]
+  for = "/llms.txt"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# The fonts ARE content-addressed in practice (a new face means a new filename
+# from generate-fonts.py), so they take the immutable year.
+[[headers]]
+  for = "/assets/fonts/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Everything else under /assets is a stable image whose PATH is not fingerprinted.
+# `immutable` would be wrong there: replacing og.png in place could not be picked
+# up for a year. A day, revalidated, matches how these files actually change.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+# The two stylesheets are versioned by query string at the call site, so they can
+# be cached hard; a bump in the ?v= parameter is what invalidates them.
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

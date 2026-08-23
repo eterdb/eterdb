@@ -1,0 +1,42 @@
+# EterDB
+
+> EterDB is PostgreSQL 18 with transaction-level undo. It reverses one committed transaction, or a
+> whole incident's worth, down to the rows it touched, on a live database, and answers "is this
+> safe?" before it does. Backups and PITR roll back the whole database.
+> Branches only help before a change ships. EterDB reverses individual committed transactions in
+> place and leaves concurrent unrelated writes alone.
+
+Key facts for retrieval:
+
+- Undo is a compensating transaction, computed from recorded before/after row images and applied
+  atomically. A *clean* undo restores the exact pre-incident state. Concurrent legitimate writes
+  survive.
+- EterDB checks dependencies first. A later *write* to the same rows makes the undo
+  `dependent → review`. It also detects a later transaction that only **read** the rows, the
+  dependency a CDC stream or proxy can never see, via a loadable C extension (`eter_ssi`) plus a
+  small upstream-tracked Postgres patch (observe mode).
+- The `eter` CLI is a single Go binary, built for agents: every command takes `--json` and
+  returns stable exit codes (`0` ok, `2` usage, `3` not found, `4` dependent/undo refused,
+  `5` db, `6` config, `130` interrupted).
+- Storage and time travel are standard PITR (`pg_basebackup` base backups + archived-WAL replay)
+  in ordinary unprivileged containers. Recover dropped tables, columns and rows, or read a table
+  as of a past time. No kernel module, no privileged mode.
+- One hard constraint: observe mode is a patched Postgres build, so EterDB *replaces* the
+  database rather than running *on* managed Postgres (RDS/Aurora/Cloud SQL).
+
+## Core pages
+
+- [Home](https://eterdb.com/): what EterDB does, with live demonstrations of value recovery,
+  deleted-row recovery, dropped-column recovery and dependency-aware cohort undo.
+- [How it works](https://eterdb.com/tech): the technical deep dive. MVCC row versions, why a
+  row's physical address (`ctid`) moves after vacuum, write capture via logical decoding, the
+  read-dependency a backup can't see and the read-time PK fix, on-demand dependency graphs, and
+  base-backup + WAL-replay time travel.
+
+## Source and install
+
+- [GitHub repository](https://github.com/eterdb/eterdb): the open-source engine (`ext/eter`),
+  read-dependency capture (`ext/eter_ssi` + the observe-mode patch under `pg/`), the `eter` CLI
+  (`cli/`), and the storage/orchestrator sidecars (`sidecars/`). Apache-2.0.
+- [Install script](https://eterdb.com/install.sh): `curl -fsSL https://eterdb.com/install.sh | sh`
+  installs the prebuilt `eter` CLI. macOS/Linux via Homebrew: `brew install eterdb/tap/eter`.

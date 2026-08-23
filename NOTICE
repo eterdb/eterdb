@@ -1,0 +1,12 @@
+EterDB
+Copyright 2026 The EterDB Authors
+
+This product includes software developed by the EterDB project.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+EterDB builds on PostgreSQL (https://www.postgresql.org/), which is
+distributed under the PostgreSQL License. The observe-mode core patch in
+`pg/patches/` is a derivative of PostgreSQL source and is governed by the
+PostgreSQL License where it modifies PostgreSQL files; the EterDB-original
+code in this repository is governed by the Apache License, Version 2.0.

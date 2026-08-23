@@ -1,0 +1,628 @@
+diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
+index 6203e3d..c861e7e 100644
+--- a/src/backend/access/heap/heapam.c
++++ b/src/backend/access/heap/heapam.c
+@@ -1380,6 +1380,15 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
+ 
+ 	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
+ 
++	/*
++	 * EterDB: a seqscan locks the whole relation (above), not per-tuple, so
++	 * hand each returned row to eter_ssi for precise per-row read capture.
++	 */
++	if ((eter_observe_mode || IsolationIsSerializable()) &&
++		eter_seqscan_read_hook != NULL &&
++		(scan->rs_base.rs_flags & SO_TYPE_SEQSCAN))
++		eter_seqscan_read_hook(scan->rs_base.rs_rd, &scan->rs_ctup);
++
+ 	return &scan->rs_ctup;
+ }
+ 
+@@ -1408,6 +1417,17 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
+ 
+ 	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
+ 
++	/*
++	 * EterDB: a seqscan locks the whole relation (heap_beginscan), not
++	 * per-tuple, so eter_tuple_read_hook never fires for its rows. Hand each
++	 * returned row to eter_ssi here for precise per-row read capture (bounded by
++	 * a cap in the extension), so the read is not over-approximated table-wide.
++	 */
++	if ((eter_observe_mode || IsolationIsSerializable()) &&
++		eter_seqscan_read_hook != NULL &&
++		(scan->rs_base.rs_flags & SO_TYPE_SEQSCAN))
++		eter_seqscan_read_hook(scan->rs_base.rs_rd, &scan->rs_ctup);
++
+ 	ExecStoreBufferHeapTuple(&scan->rs_ctup, slot,
+ 							 scan->rs_cbuf);
+ 	return true;
+@@ -1663,7 +1683,7 @@ heap_fetch(Relation relation,
+ 
+ 	if (valid)
+ 		PredicateLockTID(relation, &(tuple->t_self), snapshot,
+-						 HeapTupleHeaderGetXmin(tuple->t_data));
++						 HeapTupleHeaderGetXmin(tuple->t_data), tuple);
+ 
+ 	HeapCheckForSerializableConflictOut(valid, relation, tuple, buffer, snapshot);
+ 
+@@ -1810,7 +1830,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+ 			{
+ 				ItemPointerSetOffsetNumber(tid, offnum);
+ 				PredicateLockTID(relation, &heapTuple->t_self, snapshot,
+-								 HeapTupleHeaderGetXmin(heapTuple->t_data));
++								 HeapTupleHeaderGetXmin(heapTuple->t_data), heapTuple);
+ 				if (all_dead)
+ 					*all_dead = false;
+ 				return true;
+diff --git a/src/backend/access/heap/heapam_handler.c b/src/backend/access/heap/heapam_handler.c
+index cb4bc35..81d89bd 100644
+--- a/src/backend/access/heap/heapam_handler.c
++++ b/src/backend/access/heap/heapam_handler.c
+@@ -2581,7 +2581,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
+ 			{
+ 				hscan->rs_vistuples[ntup++] = offnum;
+ 				PredicateLockTID(scan->rs_rd, &loctup.t_self, snapshot,
+-								 HeapTupleHeaderGetXmin(loctup.t_data));
++								 HeapTupleHeaderGetXmin(loctup.t_data), &loctup);
+ 			}
+ 			HeapCheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+ 												buffer, snapshot);
+diff --git a/src/backend/access/index/indexam.c b/src/backend/access/index/indexam.c
+index 219df19..5340937 100644
+--- a/src/backend/access/index/indexam.c
++++ b/src/backend/access/index/indexam.c
+@@ -686,8 +686,20 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
+ 									&scan->xs_heap_continue, &all_dead);
+ 
+ 	if (found)
++	{
+ 		pgstat_count_heap_fetch(scan->indexRelation);
+ 
++		/*
++		 * EterDB: this index produced a visible heap tuple, which
++		 * PredicateLockTID has already stashed by TID. Report the index so
++		 * eter_ssi can drop its coarse index-relation over-approximation in
++		 * favour of that precise row (issue #192).
++		 */
++		if (eter_index_read_hook != NULL)
++			eter_index_read_hook(scan->heapRelation, &scan->xs_heaptid,
++								 RelationGetRelid(scan->indexRelation), true);
++	}
++
+ 	/*
+ 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
+ 	 * AM to kill its entry for that TID (this will take effect in the next
+@@ -779,6 +791,19 @@ index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap)
+ 
+ 	pgstat_count_index_tuples(scan->indexRelation, ntids);
+ 
++	/*
++	 * EterDB: this index produced candidate rows for a bitmap heap scan, which
++	 * predicate-locks (and so stashes) every visible tuple it then returns.
++	 * Report the index — there is no heap relation or TID to hand over here, the
++	 * heap side does that — so its coarse index-relation over-approximation can
++	 * be dropped in favour of those rows (issue #192). A bitmap that matched
++	 * nothing produces no rows to stash, so it is left uncovered and keeps the
++	 * coarse line.
++	 */
++	if (ntids > 0 && eter_index_read_hook != NULL)
++		eter_index_read_hook(NULL, NULL,
++							 RelationGetRelid(scan->indexRelation), true);
++
+ 	return ntids;
+ }
+ 
+diff --git a/src/backend/executor/nodeIndexonlyscan.c b/src/backend/executor/nodeIndexonlyscan.c
+index a6a00d5..23d1519 100644
+--- a/src/backend/executor/nodeIndexonlyscan.c
++++ b/src/backend/executor/nodeIndexonlyscan.c
+@@ -189,6 +189,19 @@ IndexOnlyNext(IndexOnlyScanState *node)
+ 
+ 			tuple_from_heap = true;
+ 		}
++		else if (eter_index_read_hook != NULL)
++		{
++			/*
++			 * EterDB: the heap page is all-visible, so this row is returned
++			 * straight from the index and no heap tuple ever reaches
++			 * eter_tuple_read_hook. Hand over the heap TID so eter_ssi can
++			 * capture the read precisely, instead of depending on the coarse
++			 * index-relation over-approximation (issues #175, #192).
++			 */
++			eter_index_read_hook(scandesc->heapRelation, tid,
++								 RelationGetRelid(scandesc->indexRelation),
++								 false);
++		}
+ 
+ 		/*
+ 		 * Fill the scan tuple slot with data from the index.  This might be
+diff --git a/src/backend/storage/lmgr/predicate.c b/src/backend/storage/lmgr/predicate.c
+index d82114f..637eaf9 100644
+--- a/src/backend/storage/lmgr/predicate.c
++++ b/src/backend/storage/lmgr/predicate.c
+@@ -197,6 +197,7 @@
+ 
+ #include "postgres.h"
+ 
++#include "access/htup.h"
+ #include "access/parallel.h"
+ #include "access/slru.h"
+ #include "access/transam.h"
+@@ -421,6 +422,53 @@ static HTAB *LocalPredicateLockHash = NULL;
+ static SERIALIZABLEXACT *MySerializableXact = InvalidSerializableXact;
+ static bool MyXactDidWrite = false;
+ 
++/*
++ * EterDB observe mode. When eter_observe_mode is on, a transaction running below
++ * SERIALIZABLE still acquires SIREAD predicate locks on reads (so eter_ssi can
++ * harvest the read set), with NO serialization-failure enforcement (no 40001
++ * aborts) and no change to visibility/snapshots.
++ *
++ * Crucially, observe capture is *backend-local*: it does NOT register a shared
++ * SERIALIZABLEXACT. It only builds the per-backend LocalPredicateLockHash (the
++ * tuple→page→relation granularity/promotion bookkeeping core already keeps
++ * locally) and skips every shared-memory touch — CreatePredicateLock, the sxact
++ * lifecycle, and the commit-time ReleasePredicateLocks teardown. That teardown
++ * takes SerializableXactHashLock EXCLUSIVE once per transaction, and under read
++ * concurrency ~two-thirds of an observe backend's time was spent parked on it
++ * (issue #154 / test/observe-read-decompose.md); dropping the shared sxact
++ * removes that entire term. MyXactIsObserveLocal marks such a transaction: the
++ * read gate admits it (SerializationNeededForRead), the acquire path stays local
++ * (PredicateLockAcquire), the read set is harvested from LocalPredicateLockHash
++ * at PRE_COMMIT, and the local table is freed at transaction end.
++ */
++bool		eter_observe_mode = false;
++static bool MyXactIsObserveLocal = false;
++
++/*
++ * EterDB read-time PK capture hook (set by eter_ssi). Invoked from
++ * PredicateLockTID when a tuple SIREAD lock is acquired, with the live tuple, so
++ * the row's PK is resolved at read time rather than re-read from the heap at
++ * drain time (which races vacuum/line-pointer reuse).
++ */
++EterTupleReadHook eter_tuple_read_hook = NULL;
++
++/*
++ * EterDB per-row seqscan read hook (set by eter_ssi). Invoked once per tuple a
++ * heap sequential scan returns, so the rows behind a relation-level predicate
++ * lock can be captured individually rather than over-approximated to table level.
++ */
++EterTupleReadHook eter_seqscan_read_hook = NULL;
++
++/*
++ * EterDB index read hook (set by eter_ssi). Invoked when an index scan produces a
++ * row, reporting the index that produced it: with fetched=true the heap tuple was
++ * fetched (and already stashed by PredicateLockTID), with fetched=false an Index
++ * Only Scan returned it straight from the index. It lets eter_ssi drop the coarse
++ * index-relation over-approximation for indexes whose rows it captured precisely,
++ * while indexes that produced nothing (empty scans) keep it.
++ */
++EterIndexReadHook eter_index_read_hook = NULL;
++
+ /*
+  * The SXACT_FLAG_RO_UNSAFE optimization might lead us to release
+  * MySerializableXact early.  If that happens in a parallel query, the leader
+@@ -515,8 +563,13 @@ PredicateLockingNeededForRelation(Relation relation)
+ static inline bool
+ SerializationNeededForRead(Relation relation, Snapshot snapshot)
+ {
+-	/* Nothing to do if this is not a serializable transaction */
+-	if (MySerializableXact == InvalidSerializableXact)
++	/*
++	 * Nothing to do if this is neither a serializable transaction nor an
++	 * EterDB observe-local transaction. Observe-local has no SERIALIZABLEXACT
++	 * (MySerializableXact stays Invalid) but still acquires backend-local SIREAD
++	 * locks, so it must pass this gate.
++	 */
++	if (MySerializableXact == InvalidSerializableXact && !MyXactIsObserveLocal)
+ 		return false;
+ 
+ 	/*
+@@ -538,8 +591,11 @@ SerializationNeededForRead(Relation relation, Snapshot snapshot)
+ 	 * A transaction is flagged as RO_SAFE if all concurrent R/W transactions
+ 	 * commit without having conflicts out to an earlier snapshot, thus
+ 	 * ensuring that no conflicts are possible for this transaction.
++	 *
++	 * Skipped for observe-local: RO_SAFE is an sxact flag, and observe-local
++	 * has no sxact — its locks are backend-local and freed at transaction end.
+ 	 */
+-	if (SxactIsROSafe(MySerializableXact))
++	if (!MyXactIsObserveLocal && SxactIsROSafe(MySerializableXact))
+ 	{
+ 		ReleasePredicateLocks(false, true);
+ 		return false;
+@@ -1492,6 +1548,107 @@ GetPredicateLockStatusData(void)
+ 	return data;
+ }
+ 
++/*
++ * EterGetMyPredicateLockTargets
++ *		Return the predicate-lock target tags held by the CURRENT backend's
++ *		serializable transaction — the EterDB read-set harvest at PRE_COMMIT.
++ *
++ * GetPredicateLockStatusData() (above) feeds pg_locks: it seq-scans the GLOBAL
++ * predicate lock hash while holding ALL partition locks plus
++ * SerializableXactHashLock, then the caller filters to one transaction. Paying
++ * that whole-cluster walk + 17-lock acquisition on every observe-mode commit is
++ * the measured write-path bottleneck (perf report). This walks ONLY this
++ * transaction's own per-xact predicate lock list under a single shared lock —
++ * O(my locks), no global contention. The resulting set is identical to filtering
++ * GetPredicateLockStatusData() to MySerializableXact (it includes locks acquired
++ * by this session's parallel workers, since those hang off the same
++ * SERIALIZABLEXACT), so read-set completeness is unchanged.
++ *
++ * Returns a palloc'd array of target tags (duplicates possible, exactly as in
++ * GetPredicateLockStatusData) and sets *ntags; returns NULL with *ntags == 0
++ * when this transaction holds no predicate locks or has no SERIALIZABLEXACT.
++ *
++ * EterDB observe-local transactions have no SERIALIZABLEXACT at all; for them the
++ * held target tags live only in the backend-local LocalPredicateLockHash, so we
++ * harvest that directly (no shared lock needed — it is per-backend memory). The
++ * caller (eter_ssi) is mode-transparent: it always calls this one function.
++ */
++PREDICATELOCKTARGETTAG *
++EterGetMyPredicateLockTargets(int *ntags)
++{
++	SERIALIZABLEXACT *sxact = MySerializableXact;
++	PREDICATELOCKTARGETTAG *tags;
++	dlist_iter	iter;
++	int			n = 0;
++	int			i = 0;
++
++	*ntags = 0;
++
++	/* Observe-local: harvest the per-backend local predicate lock table. */
++	if (sxact == InvalidSerializableXact)
++	{
++		HASH_SEQ_STATUS seqstat;
++		LOCALPREDICATELOCK *locallock;
++
++		if (!MyXactIsObserveLocal || LocalPredicateLockHash == NULL)
++			return NULL;
++
++		hash_seq_init(&seqstat, LocalPredicateLockHash);
++		while ((locallock = (LOCALPREDICATELOCK *) hash_seq_search(&seqstat)) != NULL)
++			if (locallock->held)
++				n++;
++		if (n == 0)
++			return NULL;
++
++		tags = (PREDICATELOCKTARGETTAG *) palloc(sizeof(PREDICATELOCKTARGETTAG) * n);
++		hash_seq_init(&seqstat, LocalPredicateLockHash);
++		while ((locallock = (LOCALPREDICATELOCK *) hash_seq_search(&seqstat)) != NULL)
++			if (locallock->held)
++				tags[i++] = locallock->tag;
++
++		*ntags = i;
++		return tags;
++	}
++
++	/*
++	 * SerializablePredicateListLock (shared) is what core holds to walk a
++	 * single xact's predicate lock list (see ReleaseOneSerializableXact); it
++	 * blocks the exclusive bulk operations (lock transfer, summarization, table
++	 * drop) that could free a target out from under us. perXactPredicateListLock
++	 * additionally guards against concurrent parallel workers of this session
++	 * (a no-op at PRE_COMMIT, but kept for faithfulness). We only READ the
++	 * immutable target tags, so shared mode suffices and no partition locks are
++	 * needed.
++	 */
++	LWLockAcquire(SerializablePredicateListLock, LW_SHARED);
++	if (IsInParallelMode())
++		LWLockAcquire(&sxact->perXactPredicateListLock, LW_SHARED);
++
++	dlist_foreach(iter, &sxact->predicateLocks)
++		n++;
++
++	if (n > 0)
++	{
++		tags = (PREDICATELOCKTARGETTAG *) palloc(sizeof(PREDICATELOCKTARGETTAG) * n);
++		dlist_foreach(iter, &sxact->predicateLocks)
++		{
++			PREDICATELOCK *predlock =
++				dlist_container(PREDICATELOCK, xactLink, iter.cur);
++
++			tags[i++] = predlock->tag.myTarget->tag;
++		}
++	}
++	else
++		tags = NULL;
++
++	if (IsInParallelMode())
++		LWLockRelease(&sxact->perXactPredicateListLock);
++	LWLockRelease(SerializablePredicateListLock);
++
++	*ntags = i;
++	return tags;
++}
++
+ /*
+  * Free up shared memory structures by pushing the oldest sxact (the one at
+  * the front of the SummarizeOldestCommittedSxact queue) into summary form.
+@@ -1708,6 +1865,40 @@ GetSerializableTransactionSnapshot(Snapshot snapshot)
+ 												 NULL, InvalidPid);
+ }
+ 
++/*
++ * EterDB observe mode: arm *backend-local* SIREAD capture for a transaction
++ * running below SERIALIZABLE, so reads acquire predicate locks (harvested by
++ * eter_ssi) without enabling serialization-failure enforcement.
++ *
++ * Unlike the SERIALIZABLE path, this registers NO shared SERIALIZABLEXACT and
++ * takes NO snapshot: it only creates the per-backend LocalPredicateLockHash and
++ * sets MyXactIsObserveLocal. Reads then run the ordinary predicate-lock acquire
++ * path, which stays entirely local (PredicateLockAcquire skips the shared
++ * CreatePredicateLock for observe-local), and the read set is harvested from the
++ * local table at PRE_COMMIT. Avoiding the shared sxact avoids its commit-time
++ * ReleasePredicateLocks teardown, which serializes every observe commit on
++ * SerializableXactHashLock — the dominant read-concurrency cost (issue #154).
++ * Visibility is unchanged (no snapshot taken here). Called once, at
++ * first-snapshot setup.
++ */
++void
++EterMaybeRegisterObserveXact(void)
++{
++	if (!eter_observe_mode)
++		return;
++	if (MySerializableXact != InvalidSerializableXact)
++		return;					/* already serializable */
++	if (MyXactIsObserveLocal)
++		return;					/* already armed for this transaction */
++	if (IsolationIsSerializable())
++		return;					/* the normal path handles those */
++	if (IsInParallelMode() || IsParallelWorker() || RecoveryInProgress())
++		return;
++
++	MyXactIsObserveLocal = true;
++	CreateLocalPredicateLockHash();
++}
++
+ /*
+  * Import a snapshot to be used for the current transaction.
+  *
+@@ -2539,8 +2730,16 @@ PredicateLockAcquire(const PREDICATELOCKTARGETTAG *targettag)
+ 	if (!found)
+ 		locallock->childLocks = 0;
+ 
+-	/* Actually create the lock */
+-	CreatePredicateLock(targettag, targettaghash, MySerializableXact);
++	/*
++	 * Actually create the lock in shared memory (linked to MySerializableXact).
++	 *
++	 * EterDB observe-local capture skips this: it has no SERIALIZABLEXACT, and
++	 * the whole point is to keep the read set backend-local (the local entry
++	 * above is all eter_ssi needs). The granularity/promotion bookkeeping below
++	 * runs entirely against LocalPredicateLockHash, so it stays correct.
++	 */
++	if (!MyXactIsObserveLocal)
++		CreatePredicateLock(targettag, targettaghash, MySerializableXact);
+ 
+ 	/*
+ 	 * Lock has been acquired. Check whether it should be promoted to a
+@@ -2557,8 +2756,15 @@ PredicateLockAcquire(const PREDICATELOCKTARGETTAG *targettag)
+ 	}
+ 	else
+ 	{
+-		/* Clean up any finer-granularity locks */
+-		if (GET_PREDICATELOCKTARGETTAG_TYPE(*targettag) != PREDLOCKTAG_TUPLE)
++		/*
++		 * Clean up any finer-granularity locks. Observe-local never created
++		 * shared child locks, and DeleteChildTargetLocks walks shared structures
++		 * under MySerializableXact (Invalid here) — so skip it. Stale finer local
++		 * entries are harmless: the harvest emits only RELATION targets from the
++		 * local table (tuple/page reads come from eter_ssi's read-time stash).
++		 */
++		if (!MyXactIsObserveLocal &&
++			GET_PREDICATELOCKTARGETTAG_TYPE(*targettag) != PREDLOCKTAG_TUPLE)
+ 			DeleteChildTargetLocks(targettag);
+ 	}
+ }
+@@ -2619,7 +2825,7 @@ PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot)
+  */
+ void
+ PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
+-				 TransactionId tuple_xid)
++				 TransactionId tuple_xid, HeapTuple tuple)
+ {
+ 	PREDICATELOCKTARGETTAG tag;
+ 
+@@ -2654,6 +2860,14 @@ PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
+ 									 ItemPointerGetBlockNumber(tid),
+ 									 ItemPointerGetOffsetNumber(tid));
+ 	PredicateLockAcquire(&tag);
++
++	/*
++	 * EterDB: a tuple SIREAD lock was just taken. Hand the live tuple to
++	 * eter_ssi (if registered) so it can resolve the row's PK now, keyed by
++	 * this tuple target — read-time accurate, no drain-time heap re-read.
++	 */
++	if (eter_tuple_read_hook != NULL && tuple != NULL)
++		eter_tuple_read_hook(relation, tuple);
+ }
+ 
+ 
+@@ -3367,6 +3581,20 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
+ 
+ 	if (MySerializableXact == InvalidSerializableXact)
+ 	{
++		/*
++		 * EterDB observe-local: no shared SERIALIZABLEXACT, but a live
++		 * LocalPredicateLockHash still holds the read set. It was already
++		 * harvested at PRE_COMMIT by eter_ssi; free the local table and reset
++		 * observe state. Runs on both commit and abort (harvest ran only on
++		 * commit). This is the ENTIRE observe-local teardown — no
++		 * SerializableXactHashLock acquisition, which is precisely the
++		 * read-concurrency cost this avoids (issue #154).
++		 */
++		if (MyXactIsObserveLocal)
++		{
++			ReleasePredicateLocksLocal();
++			return;
++		}
+ 		Assert(LocalPredicateLockHash == NULL);
+ 		return;
+ 	}
+@@ -3680,6 +3908,7 @@ ReleasePredicateLocksLocal(void)
+ {
+ 	MySerializableXact = InvalidSerializableXact;
+ 	MyXactDidWrite = false;
++	MyXactIsObserveLocal = false;
+ 
+ 	/* Delete per-transaction lock table */
+ 	if (LocalPredicateLockHash != NULL)
+@@ -3993,6 +4222,15 @@ CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot)
+ 	if (!SerializationNeededForRead(relation, snapshot))
+ 		return false;
+ 
++	/*
++	 * EterDB observe-local: reads pass SerializationNeededForRead (so their
++	 * SIREAD locks are still acquired by the separate PredicateLockTID calls),
++	 * but there is no SERIALIZABLEXACT and no conflict-out enforcement. Return
++	 * false BEFORE dereferencing MySerializableXact (which is Invalid here).
++	 */
++	if (MyXactIsObserveLocal)
++		return false;
++
+ 	/* Check if someone else has already decided that we need to die */
+ 	if (SxactIsDoomed(MySerializableXact))
+ 	{
+@@ -4029,6 +4267,14 @@ CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot s
+ 	if (!SerializationNeededForRead(relation, snapshot))
+ 		return;
+ 
++	/*
++	 * EterDB observe-local: reads pass the gate above (so their SIREAD locks are
++	 * captured) but there is no SERIALIZABLEXACT and no rw-conflict enforcement.
++	 * Return before any code that dereferences MySerializableXact.
++	 */
++	if (MyXactIsObserveLocal)
++		return;
++
+ 	/* Check if someone else has already decided that we need to die */
+ 	if (SxactIsDoomed(MySerializableXact))
+ 	{
+diff --git a/src/backend/utils/misc/guc_tables.c b/src/backend/utils/misc/guc_tables.c
+index 6b82a23..116f342 100644
+--- a/src/backend/utils/misc/guc_tables.c
++++ b/src/backend/utils/misc/guc_tables.c
+@@ -798,6 +798,15 @@ StaticAssertDecl(lengthof(config_type_names) == (PGC_ENUM + 1),
+ 
+ struct config_bool ConfigureNamesBool[] =
+ {
++	{
++		{"eter_observe_mode", PGC_USERSET, CLIENT_CONN_STATEMENT,
++			gettext_noop("Records SSI predicate-read dependencies under any isolation level (EterDB observe mode)."),
++			gettext_noop("When on, transactions below SERIALIZABLE still acquire SIREAD predicate locks so the read/write dependency graph can be retained, with no serialization-failure enforcement and no change to visibility."),
++		},
++		&eter_observe_mode,
++		false,
++		NULL, NULL, NULL
++	},
+ 	{
+ 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
+ 			gettext_noop("Enables the planner's use of sequential-scan plans."),
+diff --git a/src/backend/utils/time/snapmgr.c b/src/backend/utils/time/snapmgr.c
+index 65561cc..90cfa80 100644
+--- a/src/backend/utils/time/snapmgr.c
++++ b/src/backend/utils/time/snapmgr.c
+@@ -329,6 +329,13 @@ GetTransactionSnapshot(void)
+ 		else
+ 			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+ 
++		/*
++		 * EterDB observe mode: register an observe-only serializable xact so
++		 * reads acquire SIREAD predicate locks even below SERIALIZABLE. No-op
++		 * unless eter_observe_mode is set; does not change visibility.
++		 */
++		EterMaybeRegisterObserveXact();
++
+ 		FirstSnapshotSet = true;
+ 		return CurrentSnapshot;
+ 	}
+diff --git a/src/include/storage/predicate.h b/src/include/storage/predicate.h
+index 267d5d9..79dc91e 100644
+--- a/src/include/storage/predicate.h
++++ b/src/include/storage/predicate.h
+@@ -33,6 +33,57 @@ extern PGDLLIMPORT int max_predicate_locks_per_page;
+  */
+ typedef void *SerializableXactHandle;
+ 
++/* EterDB observe mode (records SSI predicate reads under any isolation level) */
++extern PGDLLIMPORT bool eter_observe_mode;
++extern void EterMaybeRegisterObserveXact(void);
++
++/*
++ * EterDB read-time PK capture hook. Fires from PredicateLockTID the moment a
++ * tuple SIREAD lock is acquired, with the live tuple in hand, so eter_ssi can
++ * resolve the row's primary key while the tuple is provably the one just read —
++ * eliminating the drain-time vacuum/line-pointer-reuse race that mis-resolves a
++ * stale ctid to a different row. No-op unless eter_ssi has registered it.
++ */
++struct HeapTupleData;
++typedef void (*EterTupleReadHook) (Relation relation, struct HeapTupleData *tuple);
++extern PGDLLIMPORT EterTupleReadHook eter_tuple_read_hook;
++
++/*
++ * EterDB per-row seqscan read hook. A sequential (or sample) scan in a
++ * serializable/observe transaction takes a single RELATION-level predicate lock
++ * (heap_beginscan), not per-tuple SIREAD locks, so eter_tuple_read_hook never
++ * fires for its rows and eter_ssi can only over-approximate the read to "every
++ * write to this table." This hook fires once per tuple a heap SEQSCAN returns, so
++ * eter_ssi can stash the exact rows read (up to a bounded cap) and capture the
++ * read precisely instead of table-wide. No-op unless eter_ssi has registered it.
++ */
++extern PGDLLIMPORT EterTupleReadHook eter_seqscan_read_hook;
++
++/*
++ * EterDB index read hook. A btree [Index Only] Scan takes its SIREAD lock on the
++ * INDEX relation (a page target), which carries no row identity, so eter_ssi can
++ * only resolve it to "every write to the underlying table" — an over-approximation
++ * that, applied to an ordinary indexed read, makes a whole table's write history
++ * undo-refusable (issue #192). This hook reports which index actually produced
++ * rows, so that coarse line can be dropped when the rows are already captured
++ * precisely:
++ *
++ *   fetched = true   the scan fetched a visible heap tuple through this index, so
++ *                    PredicateLockTID already stashed the row; only mark the index
++ *                    as precisely covered.
++ *   fetched = false  an Index Only Scan returned the row straight from the index
++ *                    (all-visible page, no heap fetch), so nothing reached
++ *                    eter_tuple_read_hook — hand over the heap TID so eter_ssi can
++ *                    stash it and resolve the PK at PRE_COMMIT (issue #175).
++ *
++ * An index that never fires this hook (an empty scan that matched nothing, or a
++ * bitmap scan) keeps its coarse relation line, which is what preserves soundness.
++ * No-op unless eter_ssi has registered it.
++ */
++typedef void (*EterIndexReadHook) (Relation heapRelation, ItemPointer tid,
++								   Oid indexoid, bool fetched);
++extern PGDLLIMPORT EterIndexReadHook eter_index_read_hook;
++
+ /*
+  * function prototypes
+  */
+@@ -55,7 +106,7 @@ extern void RegisterPredicateLockingXid(TransactionId xid);
+ extern void PredicateLockRelation(Relation relation, Snapshot snapshot);
+ extern void PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot);
+ extern void PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
+-							 TransactionId tuple_xid);
++							 TransactionId tuple_xid, struct HeapTupleData *tuple);
+ extern void PredicateLockPageSplit(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
+ extern void PredicateLockPageCombine(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
+ extern void TransferPredicateLocksToHeapRelation(Relation relation);
+diff --git a/src/include/storage/predicate_internals.h b/src/include/storage/predicate_internals.h
+index 5c3ea37..350afe3 100644
+--- a/src/include/storage/predicate_internals.h
++++ b/src/include/storage/predicate_internals.h
+@@ -475,4 +475,11 @@ extern PredicateLockData *GetPredicateLockStatusData(void);
+ extern int	GetSafeSnapshotBlockingPids(int blocked_pid,
+ 										int *output, int output_size);
+ 
++/*
++ * EterDB: return just the CURRENT backend's predicate-lock target tags
++ * (read-set harvest at PRE_COMMIT) without the global-table walk that
++ * GetPredicateLockStatusData() performs. See predicate.c.
++ */
++extern PREDICATELOCKTARGETTAG *EterGetMyPredicateLockTargets(int *ntags);
++
+ #endif							/* PREDICATE_INTERNALS_H */

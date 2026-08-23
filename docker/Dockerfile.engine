@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+#
+# EterDB engine image, near-stock PostgreSQL + the observe-mode patch + eter_ssi,
+# with the eter SQL engine pre-installed. This is what makes observe mode (the
+# read-dependency capture) run from `docker compose up` with NO from-source build.
+# (The full product also runs the control-plane container, see
+# docker/Dockerfile.control-plane, ordinary + unprivileged.) EterDB runs on PG18.
+#
+#   docker build -f docker/Dockerfile.engine -t eterdb-engine:pg18 .
+#
+# Note: this is a production-shape build (no --enable-cassert / -O0). The
+# assertion build used to validate the patch is documented in pg/README.md.
+ARG PG_MAJOR=18
+
+# ---- build stage: compile the patched server + eter_ssi --------------------
+FROM debian:bookworm-slim AS build
+ARG PG_MAJOR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential flex bison git ca-certificates pkg-config \
+      libreadline-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY pg/patches/ /patches/
+RUN set -eux; \
+    case "$PG_MAJOR" in \
+      18) BRANCH=REL_18_4;  PATCH=0001-eter-observe-mode-pg18.patch ;; \
+      *) echo "unsupported PG_MAJOR=$PG_MAJOR (EterDB is PG18 only)" >&2; exit 1 ;; \
+    esac; \
+    git clone --depth 1 --branch "$BRANCH" https://github.com/postgres/postgres.git .; \
+    git apply "/patches/$PATCH"; \
+    ./configure --prefix=/usr/local/pgsql --enable-depend --without-icu; \
+    make -j"$(nproc)"; \
+    make install
+
+# eter_ssi (the SSI read-dependency capture extension) built against the patched engine.
+# `clean` first: the build context may carry host-built objects (e.g. a macOS eter_ssi.o),
+# and linking a foreign-format .o fails ("file format not recognized").
+COPY ext/eter_ssi/ /src/eter_ssi/
+RUN make -C /src/eter_ssi PG_CONFIG=/usr/local/pgsql/bin/pg_config clean install
+
+# ---- runtime stage ---------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreadline8 zlib1g ca-certificates gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r postgres && useradd -r -g postgres -m -d /var/lib/postgresql postgres
+
+COPY --from=build /usr/local/pgsql /usr/local/pgsql
+COPY ext/eter/eter.sql /opt/eter/eter.sql
+COPY docker/engine-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV PATH=/usr/local/pgsql/bin:$PATH \
+    PGDATA=/var/lib/postgresql/data
+# /var/lib/eter is the shared engine↔storage volume (WAL archive + base backups):
+# create it postgres-owned in the image so a named volume mounted there initializes
+# writable for both containers' postgres user.
+RUN mkdir -p "$PGDATA" /var/lib/eter \
+    && chown -R postgres:postgres /var/lib/postgresql /var/lib/eter
+
+EXPOSE 5432
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["postgres"]

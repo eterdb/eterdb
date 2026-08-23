@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.DS_Store
+*.log
+
+# C extension build artifacts (built via `make -C ext/eter_ssi install`)
+*.o
+*.so
+*.dylib
+*.bc
+.deps/
+*.Po
+
+# from-source Postgres (observe-mode core patch) + local clusters
+.pgsrc*/
+.pgbuild*/
+.pgdata*/
+*.wal
+
+# pgvector source clone built by test/compat.sh (compatibility matrix)
+.pgvector*/
+
+# test artifacts
+obs_err.txt

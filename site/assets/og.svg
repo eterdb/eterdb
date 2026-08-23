@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <rect width="1200" height="630" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="1199" height="629" fill="none" stroke="#eaeae7"/>
+  <g transform="translate(80,72)">
+    <g transform="scale(2.333)">
+      <circle cx="12" cy="12" r="11" fill="#0a0a0a"/>
+      <path fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889"/>
+      <path fill="#ffffff" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z"/>
+    </g>
+    <text x="74" y="38" font-family="Inter, sans-serif" font-size="32" font-weight="700" fill="#0a0a0a" letter-spacing="-0.5">eterDB</text>
+  </g>
+  <text x="80" y="262" font-family="Inter, sans-serif" font-size="100" font-weight="800" fill="#0a0a0a" letter-spacing="-3">Break production.</text>
+  <text x="80" y="364" font-family="Inter, sans-serif" font-size="100" font-weight="800" fill="#0a0a0a" letter-spacing="-3">Undo it.</text>
+  <text x="80" y="452" font-family="Inter, sans-serif" font-size="64" font-weight="800" fill="#94948e" letter-spacing="-2">Even when an agent did it.</text>
+  <text x="80" y="524" font-family="Inter, sans-serif" font-size="29" font-weight="400" fill="#5d5d58">PostgreSQL 18 with transaction-level undo. Reverse a committed</text>
+  <text x="80" y="562" font-family="Inter, sans-serif" font-size="29" font-weight="400" fill="#5d5d58">transaction down to the rows it touched, while it stays live.</text>
+  <text x="80" y="606" font-family="JetBrains Mono, monospace" font-size="24" font-weight="500" fill="#0a0a0a">$ eter undo 8842 --apply</text>
+</svg>

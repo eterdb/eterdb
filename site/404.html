@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>eterDB | Page not found</title>
+  <meta name="description" content="That page does not exist on eterdb.com." />
+
+  <!-- An error page must never be indexed: it is thin by nature and its URL is
+       whatever the visitor mistyped. This is the explicit indexing policy the
+       spec's meta-robots rule asks for on non-content pages. Netlify serves
+       this file with a real 404 status, so it is not a soft 404. -->
+  <meta name="robots" content="noindex, follow" />
+
+  <meta name="theme-color" content="#fbfbfa" />
+  <meta name="color-scheme" content="light" />
+
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.ico" sizes="32x32" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+
+  <link rel="stylesheet" href="/fonts.css?v=20260809-1" />
+  <link rel="stylesheet" href="/styles.css?v=20260809-1" />
+</head>
+
+<body>
+
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="brand site-logo" href="/" aria-label="eterDB home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="11" fill="currentColor" />
+            <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+              d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889" />
+            <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z" />
+          </svg>
+        </span>
+        <span class="brand-name">eterDB</span>
+      </a>
+      <button type="button" class="nav-burger" id="nav-burger" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">
+        <span></span><span></span>
+      </button>
+      <nav class="site-nav" id="site-nav">
+        <a href="/">Homepage</a>
+        <a href="/tech">Under the hood</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="doc">
+    <section class="doc-section">
+      <h1>We could not find that page.</h1>
+      <p>The URL does not match anything on eterdb.com. It may have moved, or the link that sent you here may be wrong.</p>
+      <p>Where to go instead:</p>
+      <ul>
+        <li><a href="/">The homepage</a>, what eterDB does, shown rather than described.</li>
+        <li><a href="/tech">Under the hood</a>, the architecture, built up from first principles.</li>
+        <li><a href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">The repository</a>, source, install instructions, and issues.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="11" fill="currentColor" />
+          <path fill="none" stroke="#fbfbfa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+            d="M6.5 12 L17.5 12 A5.5 5.5 0 1 0 15.889 15.889" />
+          <path fill="#fbfbfa" d="M18.3 13.4 L17.2 17.4 L14.3 14.5 Z" />
+        </svg>
+      </span>
+      <span>eterDB</span>
+    </div>
+    <p class="footer-tag">Postgres with undo.</p>
+    <div class="footer-meta"><a href="/tech">How it works</a><a href="https://github.com/eterdb/eterdb" target="_blank" rel="noopener">GitHub</a><span>Apache 2.0</span></div>
+  </footer>
+
+  <script src="/header.js" defer></script>
+</body>
+
+</html>

@@ -1,0 +1,35 @@
+# EterDB, https://eterdb.com
+# All crawlers welcome, including AI answer engines. A curated, token-efficient
+# Markdown map of the site is at /llms.txt.
+#
+# The named AI user-agents below are listed explicitly rather than left to the
+# wildcard. Both resolve to "allow", so the behaviour is identical; the point is
+# that the policy is stated rather than inferred, which is what the spec's
+# robots-for-ai-crawlers rule asks for and what makes a later change to one
+# vendor a one-line edit instead of a rethink.
+
+User-agent: *
+Allow: /
+
+# Training and model-improvement crawlers.
+User-agent: GPTBot
+User-agent: ClaudeBot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: meta-externalagent
+User-agent: Bytespider
+User-agent: CCBot
+Allow: /
+
+# Answer-engine crawlers, the ones that fetch a page to cite it in a response.
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: Claude-User
+User-agent: Claude-SearchBot
+User-agent: PerplexityBot
+User-agent: Perplexity-User
+User-agent: Amazonbot
+User-agent: Applebot
+Allow: /
+
+Sitemap: https://eterdb.com/sitemap.xml

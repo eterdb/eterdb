@@ -1,0 +1,115 @@
+# Deep, header-aware C static analysis for the eter_ssi extension (issue #153).
+#
+# eter_ssi.c runs in Postgres shared memory as a C extension + bgworker, the
+# highest memory-safety-risk surface in the project. The fast `ci` workflow's
+# cppcheck pass is header-INDEPENDENT (no PG headers), so it only catches
+# shallow issues. Real data-flow analysis (use-after-free, leaks, null derefs,
+# uninitialized reads) needs eter_ssi.c actually COMPILED against the *patched*
+# PG18 headers it depends on (`eter_observe_mode` from storage/predicate.h,
+# storage/predicate_internals.h), which only exist in the .pgbuild18 build.
+#
+# This workflow builds that patched engine once (cached, keyed on the patch +
+# configure flags) and runs `gcc -fanalyzer` over the real translation unit via
+# the PGXS build. A stock-header compile would fail on the patch-exported
+# symbols, so this is deliberately kept on the patched build only, the same
+# reason cppcheck runs header-independent in `ci`.
+#
+# NOTE: clang has no `-fanalyzer`; that flag is GCC's. GCC 13 on ubuntu-latest
+# ships a mature analyzer, so gcc is the analyzer here (the issue title's
+# "clang -fanalyzer" conflates the two). The equivalent clang tool is the
+# separate clang static analyzer (scan-build), noted as an optional follow-up.
+name: c-analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Match the REL_* branch the tracked patch anchors to (pg/README.md). Bump this
+# and the cache will rebuild against the new headers automatically.
+env:
+  PG_REL: REL_18_4
+  PATCH: pg/patches/0001-eter-observe-mode-pg18.patch
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # dorny/paths-filter reads the PR file list via the API
+    outputs:
+      c: ${{ steps.filter.outputs.c }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # The analysis reads eter_ssi.c AND the patched headers, so a patch
+          # change must re-run it too. The workflow file gates itself.
+          filters: |
+            c:
+              - 'ext/eter_ssi/**'
+              - 'pg/patches/0001-eter-observe-mode-pg18.patch'
+              - '.github/workflows/c-analysis.yml'
+
+  fanalyzer:
+    name: gcc -fanalyzer (eter_ssi vs patched PG18 headers)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.c == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential bison flex
+
+      # The patched engine is expensive to build from source, so cache the
+      # install prefix. Key on the patch contents + PG release + configure flags:
+      # any of those changing invalidates the headers the analysis compiles against.
+      - name: Cache patched .pgbuild18
+        id: pgcache
+        uses: actions/cache@v4
+        with:
+          path: .pgbuild18
+          key: pgbuild18-${{ env.PG_REL }}-cassert-${{ hashFiles(env.PATCH) }}-v1
+
+      - name: Build patched PG18 (headers + pg_config)
+        if: steps.pgcache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$PG_REL" https://github.com/postgres/postgres.git .pgsrc18
+          git -C .pgsrc18 apply "$PWD/$PATCH"
+          cd .pgsrc18
+          # --enable-cassert matches the canonical .pgbuild18 (pg/README.md): the
+          # analysis then sees the same Assert() facts the real assert build has.
+          ./configure --prefix="$PWD/../.pgbuild18" --enable-cassert --enable-depend \
+            --without-icu --without-readline --without-zlib CFLAGS=-O0
+          make -j"$(nproc)"
+          make install
+
+      - name: Confirm the patch-exported symbol is present
+        run: |
+          hdr="$PWD/.pgbuild18/bin/pg_config"
+          "$hdr" --version
+          grep -q eter_observe_mode "$("$hdr" --includedir-server)/storage/predicate.h" \
+            && echo "patched headers OK" || { echo "MISSING patch symbol"; exit 1; }
+
+      - name: Analyze eter_ssi.c
+        run: |
+          # Fresh checkout has no build artifacts, so no clean needed (and a bare
+          # `make clean` would fail: PGXS needs PG_CONFIG, absent from a runner PATH).
+          # -fanalyzer: the deep data-flow pass (use-after-free, leak, null deref,
+          #   uninitialized read) over the real translation unit.
+          # -Wall -Wextra -Werror: fail the build on any finding.
+          # -Wno-unused-parameter: the ONE by-design PG idiom the -Werror gate must
+          #   admit. PG callback ABIs mandate unused params (fcinfo, xact arg,
+          #   bgworker main_arg), and PG's own static-inline headers (bufmgr.h,
+          #   ilist.h, ...) trip it too; upstream PG never builds with -Wextra for
+          #   this reason. Every other -Wextra class stays fatal.
+          make -C ext/eter_ssi \
+            PG_CONFIG="$PWD/.pgbuild18/bin/pg_config" \
+            COPT='-fanalyzer -Wall -Wextra -Wno-unused-parameter -Werror'
