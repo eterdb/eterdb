@@ -1,0 +1,60 @@
+# goreleaser config for the `eter` CLI.
+#
+# The CLI is in the cli/ submodule. It ships as part of a unified EterDB release:
+# tagging `vX.Y.Z` runs this (upload CLI binaries + push the Homebrew formula) and,
+# once the release is published, the separate publish-images workflow builds the
+# engine/storage container images for the same version. Dry run locally with:
+#   goreleaser release --snapshot --clean
+version: 2
+project_name: eter
+
+builds:
+  - id: eter
+    dir: cli # the CLI is its own Go module
+    main: .
+    binary: eter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X github.com/eterdb/eterdb/cli/internal/cmd.version={{ .Version }}
+
+archives:
+  - id: eter
+    formats: [tar.gz]
+    name_template: "eter_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Homebrew tap (macOS): goreleaser generates the cask and pushes it to
+# eterdb/homebrew-tap, so users run `brew install eterdb/tap/eter`. Linux users
+# install via the curl|sh script or the release tarball.
+homebrew_casks:
+  - name: eter
+    repository:
+      owner: eterdb
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://eterdb.com"
+    description: "See and surgically reverse live Postgres transactions"
+
+release:
+  # owner/name are auto-detected from the repo the workflow runs in (the public
+  # eterdb/eterdb mirror), so the download assets land where users look.
+  draft: false
+  prerelease: auto
