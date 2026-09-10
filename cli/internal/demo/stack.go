@@ -12,8 +12,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/eterdb/eterdb/cli/internal/assets"
 )
@@ -21,6 +24,55 @@ import (
 // composeProject isolates the demo's containers/volumes/network from any other
 // compose project on the host, and gives StackDown a precise target.
 const composeProject = "eterdb-demo"
+
+// EnginePort and OrchPort are the host ports the demo stack publishes. The
+// compose file reads the same env vars (ETER_DEMO_ENGINE_PORT /
+// ETER_DEMO_ORCH_PORT), so overriding one here and passing the environment
+// through to `docker compose` keeps the two in step.
+func EnginePort() string { return envOr("ETER_DEMO_ENGINE_PORT", "5433") }
+func OrchPort() string   { return envOr("ETER_DEMO_ORCH_PORT", "4400") }
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// PreflightPorts checks the demo's host ports before bring-up. If something is
+// already listening on the engine port and it is NOT this demo's own stack, that
+// process shadows the container: the demo seeds one database while capture in
+// the control plane watches another, and the walkthrough hangs at "0 rows
+// captured" with no hint why. Fail loudly instead.
+func PreflightPorts(ctx context.Context) error {
+	if StackRunning(ctx) {
+		return nil // our own stack is already up; compose will reconcile it
+	}
+	for _, p := range []struct{ name, port string }{
+		{"engine", EnginePort()},
+		{"orchestrator", OrchPort()},
+	} {
+		if tcpBusy(ctx, p.port) {
+			return fmt.Errorf(
+				"localhost:%s (the demo %s port) is already in use, and it isn't the demo stack; "+
+					"stop whatever holds it, or pick free ports: "+
+					"ETER_DEMO_ENGINE_PORT=15433 ETER_DEMO_ORCH_PORT=14400 eter demo",
+				p.port, p.name)
+		}
+	}
+	return nil
+}
+
+// tcpBusy reports whether something accepts a connection on localhost:port.
+func tcpBusy(ctx context.Context, port string) bool {
+	d := net.Dialer{Timeout: 700 * time.Millisecond}
+	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
 
 // DockerStatus reports whether the demo can drive Docker on this host.
 type DockerStatus struct {

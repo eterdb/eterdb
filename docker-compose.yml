@@ -64,8 +64,10 @@ services:
       # Published on 5433, not 5432, so the stack never collides with a Postgres
       # the developer already runs locally (a native 5432 would otherwise shadow
       # this container and the demo would connect to the wrong server). Still
-      # 5432 inside the container and on the compose network.
-      - "5433:5432"
+      # 5432 inside the container and on the compose network. Override the host
+      # port with ETER_DEMO_ENGINE_PORT when 5433 is taken (e.g. by an eterdb
+      # dev cluster); `eter demo` reads the same var for its own connection.
+      - "${ETER_DEMO_ENGINE_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # One shared volume holds the WAL archive (engine writes) + base backups
@@ -124,7 +126,9 @@ services:
       # well past the demo so it never contends. Override for a long-lived stack.
       ETER_SCHEDULE_INTERVAL_SEC: ${ETER_SCHEDULE_INTERVAL_SEC:-3600}
     ports:
-      - "4400:4400"
+      # Override with ETER_DEMO_ORCH_PORT when 4400 is taken; `eter demo` reads
+      # the same var for its own connection.
+      - "${ETER_DEMO_ORCH_PORT:-4400}:4400"
     volumes:
       # The meta cluster's own data dir, plus the shared storage substrate the
       # engine also mounts (engine writes wal-archive/, the orchestrator keeps

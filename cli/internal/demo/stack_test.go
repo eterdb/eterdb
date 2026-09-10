@@ -3,6 +3,7 @@ package demo
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,9 +54,54 @@ func TestStackComposeMaterializes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	for _, want := range []string{"ghcr.io/eterdb/engine", "ghcr.io/eterdb/control-plane", "4400"} {
+	for _, want := range []string{"ghcr.io/eterdb/engine", "ghcr.io/eterdb/control-plane", "ETER_DEMO_ENGINE_PORT"} {
 		if !bytes.Contains(b, []byte(want)) {
 			t.Errorf("materialized compose missing %q", want)
 		}
+	}
+}
+
+func TestPortOverrides(t *testing.T) {
+	if EnginePort() != "5433" || OrchPort() != "4400" {
+		t.Fatalf("defaults changed: engine=%s orch=%s", EnginePort(), OrchPort())
+	}
+	t.Setenv("ETER_DEMO_ENGINE_PORT", "15433")
+	t.Setenv("ETER_DEMO_ORCH_PORT", "14400")
+	if EnginePort() != "15433" || OrchPort() != "14400" {
+		t.Fatalf("override ignored: engine=%s orch=%s", EnginePort(), OrchPort())
+	}
+}
+
+// TestPreflightPortsBusy binds a real listener on an ephemeral port and checks
+// PreflightPorts refuses it (no demo project is running in the test env).
+func TestPreflightPortsBusy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	t.Setenv("ETER_DEMO_ENGINE_PORT", port)
+	err = PreflightPorts(context.Background())
+	if err == nil {
+		t.Fatal("PreflightPorts accepted a port with a live listener")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte(port)) {
+		t.Errorf("error should name the busy port %s: %v", port, err)
+	}
+}
+
+// TestPreflightPortsFree points both ports at almost-certainly-free ephemeral
+// numbers and checks PreflightPorts passes.
+func TestPreflightPortsFree(t *testing.T) {
+	for _, k := range []string{"ETER_DEMO_ENGINE_PORT", "ETER_DEMO_ORCH_PORT"} {
+		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		_, p, _ := net.SplitHostPort(ln.Addr().String())
+		ln.Close() // free it again
+		t.Setenv(k, p)
+	}
+	if err := PreflightPorts(context.Background()); err != nil {
+		t.Fatalf("PreflightPorts rejected free ports: %v", err)
 	}
 }

@@ -722,7 +722,7 @@ func runDemoTUI(cmd *cobra.Command, g *globalOpts) error {
 // installed binary with no checkout), then re-probes.
 func demoOrchestrator(ctx context.Context, g *globalOpts) (*client.HostedClient, error) {
 	explicit := g.url != "" || os.Getenv("ETER_URL") != ""
-	url := firstNonEmpty(g.url, os.Getenv("ETER_URL"), "http://localhost:4400")
+	url := firstNonEmpty(g.url, os.Getenv("ETER_URL"), "http://localhost:"+demo.OrchPort())
 	token := firstNonEmpty(g.token, os.Getenv("ETER_TOKEN"), os.Getenv("ETER_API_TOKEN"))
 
 	hc := client.NewHostedClient(url, token)
@@ -741,6 +741,12 @@ func demoOrchestrator(ctx context.Context, g *globalOpts) (*client.HostedClient,
 		return nil, failWithHint(core.ExitDB,
 			"the EterDB stack isn't running (orchestrator at "+url+"), and it can't be started automatically",
 			d.Reason+"; install Docker, or start a stack yourself and pass --url")
+	}
+
+	// A process squatting the engine's host port would shadow the container and
+	// hang the walkthrough at "0 rows captured"; catch it before bringing anything up.
+	if err := demo.PreflightPorts(ctx); err != nil {
+		return nil, fail(core.ExitDB, err.Error())
 	}
 
 	output.Info("The EterDB stack isn't running (orchestrator at %s).", url)
@@ -812,13 +818,14 @@ func newGuideCmd() *cobra.Command {
 	}
 }
 
-// demoDefaultDSN is the connection `docker compose up` exposes for the engine.
-// The compose stack publishes the engine on host port 5433 (not 5432, so it
-// never collides with a Postgres the developer already runs locally) and
-// defaults POSTGRES_USER/PASSWORD/DB to eter/eter/eter. The demo falls back to
-// it so `docker compose up && eter demo` needs zero config; --db or DATABASE_URL
-// still override. The "password" is the published compose default, not a secret.
-const demoDefaultDSN = "postgres://eter:eter@localhost:5433/eter" //nolint:gosec // compose default, documented, not a credential
+// demoDefaultDSN is the connection the compose stack exposes for the engine: host
+// port 5433 by default (ETER_DEMO_ENGINE_PORT overrides, matched by the compose
+// file), POSTGRES_USER/PASSWORD/DB defaulted to eter/eter/eter. The demo falls
+// back to it so `eter demo` needs zero config; --db or DATABASE_URL still
+// override. The "password" is the published compose default, not a secret.
+func demoDefaultDSN() string {
+	return "postgres://eter:eter@localhost:" + demo.EnginePort() + "/eter" //nolint:gosec // compose default, documented, not a credential
+}
 
 // requireConnString resolves a direct DSN for the demo commands (which need a
 // real Postgres connection, not the hosted transport): --db, then DATABASE_URL,
@@ -830,5 +837,5 @@ func requireConnString(g *globalOpts) string {
 	if cs := os.Getenv("DATABASE_URL"); cs != "" {
 		return cs
 	}
-	return demoDefaultDSN
+	return demoDefaultDSN()
 }
