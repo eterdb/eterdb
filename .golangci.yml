@@ -1,0 +1,64 @@
+# golangci-lint config (v2). Serious static analysis for the Go surface
+# (cli + sidecars + orchestrator + eterclient). Tuned for a pgx/HTTP Postgres
+# tool: the focus is memory/resource leaks, security, and perf, not style bikeshed.
+version: "2"
+
+linters:
+  enable:
+    # correctness / bugs
+    - errcheck        # unchecked errors
+    - govet           # vet, incl. shadow via settings below
+    - ineffassign     # ineffectual assignments
+    - staticcheck     # the big one (SA/ST/QF checks)
+    - unused          # dead code
+    - errorlint       # wrong error wrapping/comparison
+    - nilerr          # returning nil after a non-nil err
+    - bodyclose       # unclosed HTTP response bodies (orchestrator client)
+    - sqlclosecheck   # unclosed sql.Rows/Stmt
+    - rowserrcheck    # missing rows.Err() check
+    - noctx           # http/sql calls without context
+    - makezero        # append to a non-zero-len make() slice
+    - wastedassign    # assignments never used
+    - copyloopvar     # loop-var capture bugs
+    - reassign        # reassigning package-level vars from other pkgs
+    # security
+    - gosec           # security scanner
+    # performance
+    - prealloc        # slices that could be preallocated
+    - durationcheck   # accidental time.Duration multiplication
+    # hygiene
+    - unconvert       # redundant type conversions
+    - unparam         # unused function params/results
+    - misspell        # typos in comments/strings
+
+  settings:
+    errcheck:
+      # writes to stdout/stderr can't meaningfully fail and are universally ignored
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        # G104 overlaps errcheck; G115 (int overflow conversion) is very noisy
+        # on pgx/OID code, revisit case by case rather than blanket-suppress.
+        - G104
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    rules:
+      # test files may ignore errors, leak bodies, skip ctx, use weaker perms
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - bodyclose
+          - noctx
+          - prealloc
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

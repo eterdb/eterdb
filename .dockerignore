@@ -1,0 +1,16 @@
+# Keep host build artifacts out of the Docker build context — a foreign-format
+# object copied in (e.g. a macOS eter_ssi.o) breaks the in-image link, and the
+# big local build/data trees bloat the context.
+**/*.o
+**/*.so
+**/*.dylib
+.pgsrc*/
+.pgbuild*/
+.pgdata*/
+node_modules/
+cli/eter
+sidecars/bin/
+public/
+coverage/
+*.log
+.git/
