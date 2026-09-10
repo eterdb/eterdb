@@ -135,7 +135,9 @@ WORD_PATTERNS=(
   # Nouns that gesture at a claim instead of making it.
   '\bthe unlock\b'
   '\bload.bearing\b'
-  '\bblast radius\b'
+  # Hyphenated too: "blast-radius-independent" slipped a space-anchored rule
+  # twice, in site/README.md and sidecars/capture/README.md.
+  '\bblast[ -]radius\b'
   '\bdead weight\b'
   '\brounding error\b'
   '\btable stakes\b'
