@@ -5,8 +5,16 @@
 #   - ghcr.io/eterdb/engine:pg18         (patched PG18 + eter_ssi + eter SQL, observe-ready)
 #   - ghcr.io/eterdb/control-plane:pg18  (FROM engine + meta Postgres + capture + orchestrator, supervised)
 #
-# Runs on a published GitHub Release and on manual dispatch. control-plane is built FROM
-# the just-pushed engine image, so engine is built + pushed first.
+# control-plane is built FROM the just-pushed engine image, so engine is built + pushed first.
+#
+# Triggers:
+#   - workflow_run after release-cli completes. A release-cli run creates the GitHub Release
+#     with the repo's GITHUB_TOKEN, and GitHub does NOT cascade `release` events from a
+#     GITHUB_TOKEN-authored release, so `on: release` never fired. workflow_run is not
+#     GITHUB_TOKEN-gated. The job guard below drops the run unless that release-cli finished
+#     successfully.
+#   - workflow_dispatch for a standalone rebuild. The multi-arch PG-from-source build (esp.
+#     the emulated arm64 leg) is long, so kick it off deliberately when not tied to a release.
 #
 # Multi-arch: linux/amd64 + linux/arm64. arm64 is built under QEMU emulation (simple +
 # correct); since the engine compiles Postgres from source, the emulated arm64 leg is
@@ -16,8 +24,9 @@
 name: publish-images
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["release-cli"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pg_major:
@@ -37,8 +46,16 @@ env:
 jobs:
   images:
     runs-on: ubuntu-latest
+    # workflow_run fires on every release-cli conclusion; only build on a green one.
+    # workflow_dispatch has no workflow_run payload, so it passes.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch by default; pin it to the exact
+          # commit release-cli ran against (the release tag's commit). Falls back to the
+          # dispatch/branch SHA otherwise.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: docker/setup-qemu-action@v3   # arm64 emulation for the multi-arch build
 
@@ -50,6 +67,11 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The SHA image tag: the commit release-cli built from, or the dispatch SHA.
+      - name: Resolve build SHA
+        id: sha
+        run: echo "value=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
 
       # 1) engine, patched PG + eter_ssi + eter SQL. Built + pushed first so
       #    control-plane can build FROM it.
@@ -63,7 +85,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.ORG }}/engine:pg${{ env.PG_MAJOR }}
-            ${{ env.REGISTRY }}/${{ env.ORG }}/engine:pg${{ env.PG_MAJOR }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.ORG }}/engine:pg${{ env.PG_MAJOR }}-${{ steps.sha.outputs.value }}
 
       # 2) control-plane, FROM the engine image just pushed above (meta Postgres +
       #    capture + orchestrator, supervised, the whole control plane in one image).
@@ -77,4 +99,4 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.ORG }}/control-plane:pg${{ env.PG_MAJOR }}
-            ${{ env.REGISTRY }}/${{ env.ORG }}/control-plane:pg${{ env.PG_MAJOR }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.ORG }}/control-plane:pg${{ env.PG_MAJOR }}-${{ steps.sha.outputs.value }}
