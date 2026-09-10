@@ -21,6 +21,7 @@ func TestEmbeddedAssetsInSync(t *testing.T) {
 	}{
 		{filepath.Join("ext", "eter", "eter.sql"), eterSQL},
 		{filepath.Join("demo", "schema.sql"), demoSchema},
+		{"docker-compose.yml", dockerCompose},
 	}
 	for _, c := range cases {
 		want, err := os.ReadFile(filepath.Join(root, c.src))

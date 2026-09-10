@@ -1,0 +1,152 @@
+# EterDB, the containerized stack. ONE topology, TWO containers.
+#
+#   engine         the tenant, the patched Postgres (observe mode + eter_ssi),
+#                  capture_mode=sidecar, WAL archiving on. Alone.
+#   control-plane  everything else, the metadata store + capture sidecar +
+#                  orchestrator, bundled under a supervisor
+#                  (docker/Dockerfile.control-plane).
+#
+# The separation that matters is preserved: the metadata store is a SEPARATE
+# Postgres cluster from the tenant, so durable recovery data (write history,
+# dependency graph, ddl_log, backup catalog, jobs) survives the tenant having a
+# very bad day. capture + orchestrator are stateless daemons, colocating them
+# with the meta store is free.
+#
+#   docker compose up -d                 # pulls prebuilt images
+#   eter demo                            # the interactive walkthrough, two acts:
+#                                        #   1. a bad migration reversed with undo
+#                                        #   2. a dropped table recovered from a
+#                                        #      base backup (via the orchestrator)
+#
+# `eter demo` needs no flags: it defaults to this stack (engine :5433, orchestrator
+# :4400). From a source checkout with no installed binary, run `make demo`.
+# The demo drives the orchestrator (recovery) that the stack runs on :4400; you can
+# also drive it directly:
+#
+#   eter connect --url http://localhost:4400 --token change-me
+#   eter init && eter track --all
+#   eter preview <txid>                  # rw read-dependencies surface here
+#   eter recover-table public.widgets    # submits a job + waits
+#
+# By default this PULLS prebuilt images from GHCR (pull_policy: missing), so the
+# first `up` does not compile Postgres. Contributors building from source add
+# `--build`. Want the featherweight, no-container dev loop instead? Point the CLI
+# at any Postgres: `DATABASE_URL=… eter demo up` (see CLAUDE.md).
+#
+# EterDB runs on PG18 (built from source + the observe-mode patch).
+services:
+  engine:
+    image: ghcr.io/eterdb/engine:pg${PG_MAJOR:-18}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.engine
+      args:
+        PG_MAJOR: ${PG_MAJOR:-18}
+    environment:
+      # Pinned literally (NOT ${POSTGRES_USER:-eter}) so the demo stack is
+      # hermetic: compose interpolates ${VAR} from the invoking shell, so a
+      # POSTGRES_USER/PASSWORD/DB set in the developer's environment would
+      # otherwise bootstrap the engine under a different superuser than the
+      # demo's fixed eter/eter/eter DSN, and the demo would fail with
+      # `role "eter" does not exist` on an otherwise healthy container.
+      POSTGRES_USER: eter
+      POSTGRES_PASSWORD: eter
+      POSTGRES_DB: eter
+      # WAL archiving into the volume shared with the control plane, required for
+      # lossless object recovery (WAL replayed to just before a drop/truncate).
+      ETER_WAL_ARCHIVE: /var/lib/eter/wal-archive
+      # sidecar (default): no history trigger; the capture daemon in the control
+      # plane decodes writes off the commit path. Only 'trigger' for an
+      # engine-only experiment with no control plane.
+      ETER_CAPTURE_MODE: ${ETER_CAPTURE_MODE:-sidecar}
+    ports:
+      # Published on 5433, not 5432, so the stack never collides with a Postgres
+      # the developer already runs locally (a native 5432 would otherwise shadow
+      # this container and the demo would connect to the wrong server). Still
+      # 5432 inside the container and on the compose network.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # One shared volume holds the WAL archive (engine writes) + base backups
+      # and throwaway restore dirs (the control plane's storage machinery writes).
+      - eterstore:/var/lib/eter
+    healthcheck:
+      # Actually authenticate as the eter role and run a query, don't just
+      # pg_isready. Bare pg_isready only checks the server answers a startup
+      # packet; it reports Healthy even when the eter role/db is missing (e.g. a
+      # stale pgdata volume that skipped first-boot bootstrap), masking a
+      # demo-broken cluster. A real SELECT fails fast if the role/db is absent.
+      test: ["CMD-SHELL", "psql -U eter -d eter -tAc 'SELECT 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # The whole control/recovery plane in one container: the metadata store +
+  # capture sidecar + orchestrator, supervised (supervisord as PID 1, each
+  # process drops to the postgres user). Built FROM the engine image, it needs
+  # the patched PG binaries for the meta cluster + throwaway restore instances.
+  control-plane:
+    image: ghcr.io/eterdb/control-plane:pg${PG_MAJOR:-18}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.control-plane
+      args:
+        ENGINE_IMAGE: ghcr.io/eterdb/engine:pg${PG_MAJOR:-18}
+      # Override the `FROM ghcr.io/eterdb/engine:pg18` base with the engine
+      # service built in THIS run. Without it, compose/bake resolves the base
+      # image ref at build start, so control-plane builds against the PREVIOUS
+      # engine image and lags a build behind (which silently shipped the old
+      # /opt/eter/eter--0.1.0.sql after the file was renamed). Naming the context
+      # exactly the FROM ref makes bake build engine first and feed it in.
+      additional_contexts:
+        - "ghcr.io/eterdb/engine:pg${PG_MAJOR:-18}=service:engine"
+    environment:
+      # Pinned literally (see the engine service): keep the meta cluster's role
+      # and the URLs below in lockstep with the engine's fixed eter/eter/eter,
+      # immune to a POSTGRES_* set in the invoking shell.
+      POSTGRES_USER: eter
+      POSTGRES_PASSWORD: eter
+      # The tenant engine (remote, container A) and the metadata store (local,
+      # in THIS container over loopback). Distinct host:port/db, so the
+      # RequireMetaURL gate sees a genuinely separate store and starts.
+      DATABASE_URL: postgres://eter:eter@engine:5432/eter
+      ETER_META_URL: postgres://eter:eter@localhost:5432/eter_meta
+      ETER_WAL_ARCHIVE: /var/lib/eter/wal-archive
+      ETER_API_TOKEN: ${ETER_API_TOKEN:-}
+      # The default 30s maintenance cadence force-takes an aged base backup on its
+      # first tick (no backup exists yet at boot), which fires mid-demo and starves
+      # capture's IO on a constrained engine (pg_basebackup vs the seed + logical
+      # decode), stalling capture for minutes. The demo needs no scheduled backup:
+      # `demo up` does no recovery, and the interactive walkthrough takes its OWN
+      # explicit snapshot for the table-recovery act. Push the automatic cadence
+      # well past the demo so it never contends. Override for a long-lived stack.
+      ETER_SCHEDULE_INTERVAL_SEC: ${ETER_SCHEDULE_INTERVAL_SEC:-3600}
+    ports:
+      - "4400:4400"
+    volumes:
+      # The meta cluster's own data dir, plus the shared storage substrate the
+      # engine also mounts (engine writes wal-archive/, the orchestrator keeps
+      # backups/ + throwaway restores).
+      - metadata:/var/lib/eter-meta
+      - eterstore:/var/lib/eter
+    restart: unless-stopped
+    healthcheck:
+      # Gate "healthy" on the orchestrator HTTP actually listening on :4400. The
+      # three supervised processes (meta, capture, orchestrator) take a moment to
+      # come up, so without this `docker compose up --wait` (and `make demo`)
+      # would race the orchestrator and the demo's recovery act would find it
+      # unreachable. A bash /dev/tcp connect needs no curl in the image.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/4400'"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    depends_on:
+      engine:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  metadata:
+  eterstore:

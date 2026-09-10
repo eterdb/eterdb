@@ -1,7 +1,8 @@
-// Command sync refreshes the committed SQL copies under cli/internal/assets from
-// their canonical sources (ext/eter/eter.sql, demo/schema.sql). Run via
-// `go generate ./internal/assets` from the cli module. Maintainer-only, it walks
-// up from the assets dir to find the repo root, so it is a no-op outside the repo.
+// Command sync refreshes the committed asset copies under cli/internal/assets
+// from their canonical sources (ext/eter/eter.sql, demo/schema.sql, the
+// repo-root docker-compose.yml). Run via `go generate ./internal/assets` from
+// the cli module. Maintainer-only, it walks up from the assets dir to find the
+// repo root, so it is a no-op outside the repo.
 package main
 
 import (
@@ -13,7 +14,8 @@ import (
 // copies maps a source path (repo-root-relative) to its committed asset filename.
 var copies = map[string]string{
 	filepath.Join("ext", "eter", "eter.sql"): "eter.sql",
-	filepath.Join("demo", "schema.sql"):             "demo-schema.sql",
+	filepath.Join("demo", "schema.sql"):      "demo-schema.sql",
+	"docker-compose.yml":                     "docker-compose.yml",
 }
 
 func main() {

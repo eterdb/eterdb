@@ -12,16 +12,15 @@ kept separate from the command wiring (`internal/cmd`), so the interactive
 scriptable commands.
 
 ```bash
-docker compose up -d                                   # bring up the engine
-export DATABASE_URL=postgres://eter:eter@localhost:5432/eter
-eter demo                                              # watch an incident get reversed
+eter demo   # watch an incident get reversed; offers to start the Docker stack if it isn't up
 ```
 
 ## Install
 
-The CLI is a single self-contained binary, the engine SQL it applies (`eter init`) and the
-demo schema (`eter demo up`) are embedded (`internal/assets`), so it works from anywhere against
-a reachable Postgres, no repo checkout required.
+The CLI is a single self-contained binary. The engine SQL it applies (`eter init`), the demo
+schema (`eter demo up`), and the two-container `docker-compose.yml` (`eter demo` brings the
+stack up itself) are embedded (`internal/assets`), so it works from anywhere against a
+reachable Postgres, no repo checkout required.
 
 ```bash
 # macOS / Linux (Homebrew)

@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -629,13 +631,27 @@ func newDemoCmd(g *globalOpts) *cobra.Command {
 
 	down := &cobra.Command{
 		Use:     "down",
-		Short:   "drop the demo schema and clear captured history",
+		Short:   "tear the demo down (containerized stack, or just the schema + history)",
 		Args:    cobra.NoArgs,
 		Example: "  eter demo down",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			output.SetJSON(g.json)
+			ctx := cmd.Context()
+
+			// If `eter demo` brought up the containerized stack, `down -v` removes
+			// it wholesale (containers + volumes), which subsumes the SQL teardown.
+			if g.url == "" && os.Getenv("ETER_URL") == "" && demo.StackRunning(ctx) {
+				if err := demo.StackDown(ctx, os.Stderr); err != nil {
+					return fail(core.ExitDB, "stopping the stack: "+err.Error())
+				}
+				output.Emit(map[string]any{"ok": true, "stack": "removed"},
+					func() { output.Info("demo stack stopped and removed.") })
+				return nil
+			}
+
+			// Bring-your-own-Postgres: drop the demo schema + captured history in place.
 			cs := requireConnString(g)
-			if err := demo.Down(cmd.Context(), cs); err != nil {
+			if err := demo.Down(ctx, cs); err != nil {
 				return fail(core.ExitDB, err.Error())
 			}
 			output.Emit(map[string]any{"ok": true}, func() { output.Info("demo torn down.") })
@@ -664,8 +680,19 @@ func runDemoTUI(cmd *cobra.Command, g *globalOpts) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// The whole walkthrough runs through the orchestrator (base backups + WAL
+	// replay for recovery, AND meta-aware history reads for the row story), which
+	// the stack always runs. Resolve it (flags, env, then the compose default);
+	// if it is unreachable this offers to bring the containerized stack up. It
+	// runs first so that bring-up also satisfies the tenant probe below.
+	orch, err := demoOrchestrator(ctx, g)
+	if err != nil {
+		return err
+	}
+
 	// Preflight: the tenant must be reachable (the walkthrough seeds + samples it
-	// directly). History READS, though, go through the orchestrator below, not this
+	// directly). History READS, though, go through the orchestrator, not this
 	// probe: in the two-container stack history is in the meta store, which the
 	// host cannot reach directly, so a host DirectClient would read an empty
 	// tenant-local eter.history and every log/preview/undo would come up blank.
@@ -675,16 +702,6 @@ func runDemoTUI(cmd *cobra.Command, g *globalOpts) error {
 			"is the database reachable? try `eter doctor` (or `docker compose up -d`).")
 	}
 	probe.Close()
-
-	// The whole walkthrough runs through the orchestrator (base backups + WAL
-	// replay for recovery, AND meta-aware history reads for the row story), which
-	// the stack always runs. Resolve it (flags, env, then the compose default) and
-	// require it, so the demo tells an operator to bring the stack up rather than
-	// silently dropping half the story or reading an empty history.
-	orch, err := demoOrchestrator(ctx, g)
-	if err != nil {
-		return err
-	}
 
 	m := demotui.New(ctx, cs, orch, orch)
 	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
@@ -697,32 +714,89 @@ func runDemoTUI(cmd *cobra.Command, g *globalOpts) error {
 	return nil
 }
 
-// demoOrchestrator resolves and verifies the orchestrator the recovery act needs:
-// --url/--token, then ETER_URL/ETER_TOKEN, then the compose default
-// (http://localhost:4400 + ETER_API_TOKEN). It returns an error if the
-// orchestrator is unreachable, pointing the operator at `docker compose up`.
+// demoOrchestrator resolves and verifies the orchestrator the walkthrough runs
+// through: --url/--token, then ETER_URL/ETER_TOKEN, then the compose default
+// (http://localhost:4400 + ETER_API_TOKEN). If it is unreachable AND the caller
+// did not point at a specific orchestrator, it offers to bring the containerized
+// stack up with Docker (the compose file is embedded, so this works from an
+// installed binary with no checkout), then re-probes.
 func demoOrchestrator(ctx context.Context, g *globalOpts) (*client.HostedClient, error) {
-	url := g.url
-	if url == "" {
-		url = os.Getenv("ETER_URL")
-	}
-	if url == "" {
-		url = "http://localhost:4400"
-	}
-	token := g.token
-	if token == "" {
-		token = os.Getenv("ETER_TOKEN")
-	}
-	if token == "" {
-		token = os.Getenv("ETER_API_TOKEN")
-	}
+	explicit := g.url != "" || os.Getenv("ETER_URL") != ""
+	url := firstNonEmpty(g.url, os.Getenv("ETER_URL"), "http://localhost:4400")
+	token := firstNonEmpty(g.token, os.Getenv("ETER_TOKEN"), os.Getenv("ETER_API_TOKEN"))
+
 	hc := client.NewHostedClient(url, token)
-	if _, err := hc.Status(ctx); err != nil {
+	if _, err := hc.Status(ctx); err == nil {
+		return hc, nil
+	}
+
+	// Pointed at a specific orchestrator, or no stdin to prompt on: don't touch Docker.
+	if explicit || !isatty.IsTerminal(os.Stdin.Fd()) {
 		return nil, failWithHint(core.ExitDB,
 			"the interactive demo needs the EterDB control plane (orchestrator at "+url+")",
-			"start the stack first:  docker compose up -d")
+			"start the stack with `docker compose up -d`, or run `eter demo` in a terminal to have it started for you")
 	}
-	return hc, nil
+
+	if d := demo.CheckDocker(ctx); !d.OK {
+		return nil, failWithHint(core.ExitDB,
+			"the EterDB stack isn't running (orchestrator at "+url+"), and it can't be started automatically",
+			d.Reason+"; install Docker, or start a stack yourself and pass --url")
+	}
+
+	output.Info("The EterDB stack isn't running (orchestrator at %s).", url)
+	if !confirmYes("Start it with Docker now?") {
+		return nil, failWithHint(core.ExitDB,
+			"the interactive demo needs the EterDB control plane",
+			"re-run `eter demo` and answer yes, or bring it up with `docker compose up -d`")
+	}
+
+	output.Info("Starting the stack (docker compose up -d); the first run pulls images and can take a few minutes...")
+	if err := demo.StackUp(ctx, os.Stderr); err != nil {
+		return nil, fail(core.ExitDB, "bringing the stack up: "+err.Error())
+	}
+
+	// `--wait` already gated on the compose healthchecks; give the orchestrator a
+	// few extra seconds to answer /v1/status after its port opens.
+	var lastErr error
+	for i := 0; i < 15; i++ {
+		_, lastErr = hc.Status(ctx)
+		if lastErr == nil {
+			output.Info("Stack is up. Stop it later with:  eter demo down")
+			return hc, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return nil, fail(core.ExitDB, "the stack started but the orchestrator never became ready: "+lastErr.Error())
+}
+
+// firstNonEmpty returns the first non-empty string, or "".
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// confirmYes asks a yes/no question on stdin, defaulting to yes on an empty line
+// or an unreadable stdin. Callers must check for a TTY first.
+func confirmYes(question string) bool {
+	fmt.Fprint(os.Stderr, question+" [Y/n] ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func newGuideCmd() *cobra.Command {

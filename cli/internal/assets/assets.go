@@ -26,11 +26,17 @@ var eterSQL []byte
 //go:embed demo-schema.sql
 var demoSchema []byte
 
+//go:embed docker-compose.yml
+var dockerCompose []byte
+
 // EterSQL returns the embedded engine SQL bytes.
 func EterSQL() []byte { return eterSQL }
 
 // DemoSchema returns the embedded demo schema bytes.
 func DemoSchema() []byte { return demoSchema }
+
+// DockerCompose returns the embedded two-container stack definition.
+func DockerCompose() []byte { return dockerCompose }
 
 // MaterializeEterSQL writes the embedded engine SQL to the user cache dir and
 // returns its path (idempotent: rewrites only when missing or stale).
@@ -42,6 +48,13 @@ func MaterializeEterSQL() (string, error) {
 // returns its path.
 func MaterializeDemoSchema() (string, error) {
 	return materialize("demo-schema.sql", demoSchema)
+}
+
+// MaterializeDockerCompose writes the embedded docker-compose.yml to the user
+// cache dir and returns its path, so `eter demo` can bring the stack up itself
+// when run from an installed binary with no source checkout.
+func MaterializeDockerCompose() (string, error) {
+	return materialize("docker-compose.yml", dockerCompose)
 }
 
 // materialize writes content to <cache>/eter/<name>, atomically, only when the
