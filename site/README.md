@@ -162,15 +162,17 @@ python3 -m http.server 8080   # → http://localhost:8080
 
 ## Deploy to Netlify
 
-The `netlify.toml` here sets `publish = "."`, so point Netlify at this directory.
+`eterdb.com` deploys from the **public mirror** `eterdb/eterdb`, branch `main`, base directory
+`site`. The site is authored in the canonical repo and projected to the mirror by Copybara, so
+an edit reaches production one sync cycle after it merges. `netlify.toml` sets `publish = "."`
+and there is no build step.
 
-**Option A, drag & drop:** drop the `site/` folder into the Netlify dashboard.
+Deploy previews fire on mirror pull requests, not on canonical-repo PRs. For local iteration use
+`make site-preview` (serves `site/` on `:8080`); `test/lint-site-spec.sh` gates every PR.
 
-**Option B, Git (recommended):**
-1. New site from Git → pick this repo.
-2. **Base directory:** `site`
-3. **Publish directory:** `site` (or `.` with base set), Netlify reads `netlify.toml`.
-4. **Build command:** leave empty.
+To stand up a fresh Netlify site (drag-and-drop the `site/` folder, or New site from Git), set
+base directory `site`, publish directory `.`, and leave the build command empty; Netlify reads
+`netlify.toml` from there.
 
 ## Editing content
 

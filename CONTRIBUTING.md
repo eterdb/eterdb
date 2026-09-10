@@ -5,8 +5,8 @@ correctness-critical, so contributions are held to the engine's own bar.
 
 ## Ground rules
 
-- **The CLI + dashboard + undo SQL surface is a frozen interface.** Change the substrate
-  beneath it, not the documented command/function signatures. `--json` and stable exit codes
+- **The `eter` CLI and the undo SQL surface are a frozen interface.** Change the substrate
+  beneath them, not the documented command/function signatures. `--json` and stable exit codes
   are part of the contract on every CLI command.
 - **Every layer is a working mechanism.** No placeholders, no stubs standing in for the thing
   they represent.
@@ -16,15 +16,15 @@ correctness-critical, so contributions are held to the engine's own bar.
 ## Development
 
 ```bash
-make build   # the eter CLI is Go (cobra + pgx), needs the Go toolchain
-export DATABASE_URL=postgres://eter:eter@localhost:5432/eter   # any Postgres
-eter demo up
-make test-e2e        # or: bash test/e2e.sh
+make build                            # the eter CLI is Go (cobra + pgx), needs the Go toolchain
+docker compose up -d                  # the engine + control-plane stack (--build to compile the engine)
+eter connect --url http://localhost:4400
+eter demo                             # or: make test-e2e  /  bash test/e2e.sh
 ```
 
-The CLI is in `cli/` (Go); run `go test ./...` and `go build .` in `cli/`
-produces the `eter` binary. The sidecars + orchestrator + shared engine client are one
-Go module (`sidecars/`): `go build ./... && go vet ./... && go test ./...` there.
+The CLI is in `cli/` (Go); `go test ./...` and `go build .` there produce the `eter` binary. The
+sidecars, orchestrator, and shared engine client are one Go module (`sidecars/`):
+`go build ./... && go vet ./... && go test ./...`.
 
 ## Changes to the engine extension or the core patch
 
