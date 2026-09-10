@@ -47,8 +47,8 @@ A stopped sidecar with a live slot retains WAL; drop the slot
 ## Known limitations (this increment)
 
 - **History is in the main DB.** It is fully durable (WAL-logged, in backups /
-  replicas / ZFS snapshots) and gap-free, but not yet blast-radius-independent of
-  the main DB. The writer (`store.go`) is a single narrow seam so relocating to a
+  replicas / ZFS snapshots) and gap-free, but does not yet survive the main DB
+  failing independently. The writer (`store.go`) is a single narrow seam so relocating to a
   separate history-store instance later is a one-module change. That ships with
   the ZFS storage sidecar (Linux host).
 - **`fingerprint` / `statement_sample` are structural** (op + table + changed

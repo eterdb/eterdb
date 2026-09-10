@@ -65,6 +65,7 @@ POSITIVE = [
     ("lives in",       "The undo logic lives in the engine."),
     ("live inside",    "Predicate locks live inside the backend."),
     ("blast radius",   "That is the blast radius."),
+    ("blast-radius",   "Not yet blast-radius-independent of the main DB."),
     ("load-bearing",   "This rule is load-bearing."),
     ("dead weight",    "It was all dead weight."),
     ("rounding error", "A rounding error at most."),

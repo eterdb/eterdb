@@ -88,15 +88,14 @@ removed.
 
 ## The technical page (`/tech`)
 
-`tech.html` is the credibility page for a technical audience (HN, dev directories): the real
+`tech.html` is the credibility page for a technical audience (HN, dev directories): the
 architecture, built up **from first principles** like an explorable explanation. Nine sections:
 the transaction as the unit of undo, the shape of the system, write capture via logical decoding
-(MVCC + versions), the read-dependency a backup can't see (`ctid`, slot reuse, the read-time PK
-fix), on-demand graph derivation + blast-radius modes, base-backup + WAL-replay time travel
-(including the ZFS→PITR change, why the COW substrate was replaced, ADR 0003), deployment, and
-a known-limits section (observe-mode overhead, compatibility matrix, known sharp edges). Content
-is drawn from `PLAN.md`, `performance_report.md`, and `compatibility_report.md`; keep it in sync
-when those change.
+(MVCC + versions), the read-dependency a backup can't see (`ctid`, slot reuse, read-time PK
+resolution), on-demand graph derivation + the three undo modes, base-backup + WAL-replay time
+travel (including the ZFS to PITR change, ADR 0003), deployment, observe-mode overhead, and
+what's next. Content is drawn from `PLAN.md`, `performance_report.md`, and
+`compatibility_report.md`; keep it in sync when those change.
 
 **One rule governs where a Postgres concept is explained: the section that needs it, and nowhere
 earlier** (issue #209). The page has no primer up front and no glossary box. Row versions,
