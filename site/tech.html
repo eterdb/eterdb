@@ -109,9 +109,33 @@
 
 <main class="doc" id="main">
 
-<!-- ───────────────────────── Header ───────────────────────── -->
+<!-- ───────────────────────── Header ─────────────────────────
+     The mechanism up front, in order, before the page explains any of it. A
+     reader who wants the shape and not the reasoning can stop after this list.
+     Keep it to the path of one undo, in order, rather than a section summary. -->
 <header class="doc-hero">
   <h1>How eterDB works</h1>
+  <p class="doc-lede">One undo, end to end.</p>
+  <ol class="steps">
+    <li><b>Writes are copied out of the database.</b> A sidecar reads the WAL through logical
+      decoding and records the row before and the row after, for every write to a tracked table,
+      into a metadata store outside your database.</li>
+    <li><b>Reads are captured inside it.</b> A read leaves no row behind for a sidecar to find, so
+      a patched engine records each one as <code>(table, primary key)</code> while the query is
+      still running, and streams the set out after commit.</li>
+    <li><b>An undo starts as a question.</b> <code>eter preview &lt;txid&gt;</code> builds the
+      dependency graph for that one transaction out of the store: who overwrote the rows it wrote,
+      and who read them.</li>
+    <li><b>Clean means nothing else touched those rows.</b> eterDB inverts the recorded
+      before-images into compensating DML and, under <code>--apply</code>, runs all of it against
+      your live database in one transaction.</li>
+    <li><b>Dependent means something did.</b> eterDB names each dependent transaction and says
+      whether it provably read the row or only looks like it did. You choose: refuse, reverse them
+      too, or reverse the target alone and let them diverge.</li>
+    <li><b>A dropped table has no before-image.</b> That case is a restore instead: a base backup
+      plus WAL replay into a throwaway Postgres, with the object extracted from the copy. The live
+      database stays up throughout.</li>
+  </ol>
 </header>
 
 <!-- ───────────────────────── Table of contents ─────────────────────────
@@ -528,14 +552,10 @@ ctid = <span class="c-num">(0, 2)</span>
   </p>
   <p>
     The storage sidecar is a point-in-time-recovery engine: WAL archiving, replay to an exact
-    position, standing up a throwaway Postgres, extracting one object. All of that is
-    substrate-agnostic. An earlier design put the data directory on <b>ZFS</b> and took
-    copy-on-write snapshots, which clone in milliseconds but take a kernel module on the host
-    (<a href="#deploy">§7</a>). ZFS supplied a base image and its materialization, and both have
-    standard unprivileged Postgres equivalents, so the sidecar takes <b>pg_basebackup base
-    backups</b> alongside the WAL archive instead. Recovery copies the newest backup from before the
-    change, replays archived WAL forward to just before the drop, and pulls the object out of the
-    copy.
+    position, standing up a throwaway Postgres, extracting one object. Its base image is a
+    <b>pg_basebackup</b> physical backup, taken alongside the WAL archive. Recovery copies the
+    newest backup from before the change, replays archived WAL forward to just before the drop, and
+    pulls the object out of the copy.
   </p>
 
   <figure class="fig wide" data-fig="pitr">
@@ -557,14 +577,25 @@ ctid = <span class="c-num">(0, 2)</span>
       backup and before the drop come back too.</li>
     <li>As-of reads restore nothing. Read a table as it was before a bad deploy, then revert the
       deploy's writes; unrelated writes in the same window survive.</li>
-    <li>Recovery costs minutes on a large database, against the milliseconds a ZFS clone took, and
-      backups are full physical copies rather than shared blocks. In exchange the storage tier runs
-      anywhere containers run.</li>
+    <li>Recovery costs minutes on a large database, and backups are full physical copies rather
+      than shared blocks. In exchange the storage tier runs anywhere containers run.</li>
     <li>History is never pruned. <code>eter.history</code> is append-only, and base backups and WAL
       segments are retained by default, so a months-old restore still works. History grows by one
       row image per write to a tracked table; backups and WAL can be bounded with
       <code>ETER_BACKUP_RETAIN_COUNT</code> or <code>ETER_BACKUP_HORIZON_DAYS</code>.</li>
   </ul>
+
+  <aside class="callout" id="why-not-zfs">
+    <span class="callout-tag">Why not a copy-on-write filesystem</span>
+    <p>
+      A ZFS snapshot clones a data directory in milliseconds, where a base backup plus replay costs
+      minutes, and eterDB's storage tier was built on ZFS first. ZFS is a host kernel module: it
+      takes a Linux host you control and a privileged container with <code>/dev/zfs</code> passed
+      through, and no serverless container runtime can offer either. The two things it supplied, a
+      base image and a way to materialize it, both have standard unprivileged Postgres equivalents,
+      so the sidecar uses those and the tier runs wherever a container does.
+    </p>
+  </aside>
 </section>
 
 <!-- ───────────────────────── 7 · How to deploy it ───────────────────────── -->
@@ -572,27 +603,15 @@ ctid = <span class="c-num">(0, 2)</span>
   <h2>7. Deploying it</h2>
   <p>
     eterDB <em>is</em> the Postgres, a patched engine build with observe mode and the
-    <code>eter_ssi</code> background worker. Under the ZFS design that was expensive to run:
+    <code>eter_ssi</code> background worker. What it takes to run:
   </p>
 
-  <div class="yncols">
-    <div class="yncol no">
-      <h3>Then, the ZFS era</h3>
-      <ul>
-        <li>A Linux host you control, with the ZFS kernel module loaded</li>
-        <li>A <b>privileged</b> container with <code>/dev/zfs</code> passed through</li>
-        <li>No serverless runtimes. A kernel module can't ride along in a container.</li>
-      </ul>
-    </div>
-    <div class="yncol yes">
-      <h3>Now, after the PITR swap</h3>
-      <ul>
-        <li>Any <b>container runtime</b>: Kubernetes, Cloud Run, Fargate, Docker Desktop on a Mac</li>
-        <li>One <b>storage volume</b>, shared by the engine (WAL archive) and the storage tier (base backups)</li>
-        <li>Ordinary unprivileged containers. No root, no kernel module, no privileged mode.</li>
-      </ul>
-    </div>
-  </div>
+  <ul class="spec">
+    <li>Any <b>container runtime</b>: Kubernetes, Cloud Run, Fargate, Docker Desktop on a Mac.</li>
+    <li>One <b>storage volume</b>, shared by the engine (WAL archive) and the storage tier (base
+      backups).</li>
+    <li>Ordinary unprivileged containers. No root, no kernel module, no privileged mode.</li>
+  </ul>
 
   <p>
     Two containers sharing one volume. The <b>engine</b> has the patched build baked in, so you
@@ -627,58 +646,39 @@ ctid = <span class="c-num">(0, 2)</span>
   <h2>8. Trade-offs and overhead</h2>
   <p>
     Capturing <em>writes</em> is nearly free and off the commit path (<a href="#writes">§3</a>).
-    Observe mode is where the cost was. The first implementation ran at ~27% read overhead at 16
-    clients and ~53% at 100, worsening as concurrency rose. It now costs ~3%, flat.
+    Observe mode costs about <b>3% of read throughput</b>, flat from 16 to 100 concurrent clients,
+    and about 13% on writes.
   </p>
 
   <p>
-    That first implementation reused Postgres's own machinery. SSI already tracks who-read-what with
-    predicate locks to enforce <code>SERIALIZABLE</code>, so observe mode registered a serializable
-    transaction under each query, let stock SSI take the locks, and harvested them at commit. The
-    graph it produced was correct, at about half the read throughput under load.
-  </p>
-  <p>
-    Profiling a busy backend under a pure read workload put taking the locks at <b>0.2%</b>.
-    Two-thirds of the backend's wall-clock sat in <code>semop</code> at commit, asleep on one
-    cluster-wide lock. The teardown was the cost: registering that hidden serializable transaction
-    meant unlinking it at commit, which took <code>SerializableXactHashLock</code> exclusively every
-    time. At tens of thousands of commits a second every backend queued behind every other, and that
-    wait is what grows with concurrency.
-  </p>
-  <p>
-    Postgres keeps predicate locks in <em>shared</em> memory so that other backends' writes can
-    detect a conflict against your reads. Observe mode never needs that, since nobody reads another
-    backend's locks and dependency matching happens later, out of process, by
-    <code>(table,&nbsp;primary key)</code>. The registration, the shared lock table and the
-    commit-time teardown all came out, and observe keeps its read-set backend-local, with the same
-    coarsening and promotion logic in per-backend memory.
-  </p>
-
-  <figure class="fig wide" data-fig="scaling">
-    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
-    <figcaption class="fig-cap">Read overhead, before and after. The first pass (shared SSI) climbed to ~53% as concurrency rose. Backend-local capture is flat at ~2-3% from 16 to 100 clients. Same binary, observe on vs off, interleaved and order-controlled on one warm cluster.</figcaption>
-  </figure>
-
-  <p>
-    The workload is pgbench point-select traffic (<code>-S</code>) at 16 to 100 clients against the production-shape
-    (assertions-off, <code>-O2</code>) build, observe on vs off on the same binary. The harness is
-    <a href="https://github.com/eterdb/eterdb/blob/main/test/observe-read-scaling.sh"><code>test/observe-read-scaling.sh</code></a>.
-    Writes improved too, since the same teardown is gone for them, settling around ~13%. That
-    residual is the work of streaming the read-set out at commit, and a read-heavy workload with
-    observe on writes tens of thousands of read-set records to disk.
+    It is that cheap because none of it is shared between backends. Postgres keeps predicate locks
+    in <em>shared</em> memory so that another backend's write can detect a conflict against your
+    reads. Observe mode never needs that: nobody reads another backend's locks, and dependency
+    matching happens later, out of process, by <code>(table,&nbsp;primary key)</code>. The read-set
+    stays in per-backend memory, with the same coarsening and promotion logic, and is streamed out
+    at commit.
   </p>
 
   <table class="dtable">
-    <caption>Throughput overhead by capture path, first implementation against the current one, at 100 concurrent clients.</caption>
+    <caption>Throughput overhead by capture path, at 100 concurrent clients.</caption>
     <thead>
-      <tr><th scope="col">Path (@100 clients)</th><th scope="col">First pass (shared SSI)</th><th scope="col">Now (backend-local)</th></tr>
+      <tr><th scope="col">Path (@100 clients)</th><th scope="col">Overhead</th></tr>
     </thead>
     <tbody>
-      <tr><th scope="row">Write capture (logical decoding)</th><td class="t-off">~10%, off commit path</td><td class="t-off">unchanged</td></tr>
-      <tr><th scope="row">Observe, writes</th><td>~15%</td><td class="t-flat">~13%, flat</td></tr>
-      <tr><th scope="row">Observe, reads</th><td class="t-rise">~53%, rising</td><td class="t-flat">~3%, flat</td></tr>
+      <tr><th scope="row">Write capture (logical decoding)</th><td class="t-off">~10%, off the commit path</td></tr>
+      <tr><th scope="row">Observe, writes</th><td class="t-flat">~13%, flat</td></tr>
+      <tr><th scope="row">Observe, reads</th><td class="t-flat">~3%, flat</td></tr>
     </tbody>
   </table>
+
+  <p>
+    The workload is pgbench point-select traffic (<code>-S</code>) at 16 to 100 clients against the
+    production-shape (assertions-off, <code>-O2</code>) build, observe on vs off on the same binary,
+    interleaved and order-controlled on one warm cluster. The harness is
+    <a href="https://github.com/eterdb/eterdb/blob/main/test/observe-read-scaling.sh"><code>test/observe-read-scaling.sh</code></a>.
+    The residual on writes is the work of streaming the read-set out at commit: a read-heavy
+    workload with observe on writes tens of thousands of read-set records to disk.
+  </p>
 
   <p>
     The completeness harness holds <b>100% read-edge recall</b> across its adversarial seeds, and the
@@ -693,6 +693,31 @@ ctid = <span class="c-num">(0, 2)</span>
     or a read-only analyst whose reads need no capture turns observe off for itself and keeps full
     parallelism. Capturing from parallel workers is future engine work.
   </p>
+
+  <aside class="aside-fix" id="first-pass">
+    <span class="callout-tag">The first implementation, and what made it slow</span>
+    <p>
+      Observe mode originally reused Postgres's own machinery whole. SSI already tracks
+      who-read-what to enforce <code>SERIALIZABLE</code>, so the first version registered a
+      serializable transaction under each query, let stock SSI take the predicate locks, and
+      harvested them at commit. The graph it produced was correct, at ~27% read overhead at 16
+      clients and ~53% at 100.
+    </p>
+    <p>
+      Profiling a busy backend under a pure read workload put taking the locks at <b>0.2%</b>.
+      Two-thirds of the backend's wall-clock sat in <code>semop</code> at commit, asleep on one
+      cluster-wide lock. The teardown was the cost: registering that hidden serializable transaction
+      meant unlinking it at commit, which took <code>SerializableXactHashLock</code> exclusively
+      every time. At tens of thousands of commits a second every backend queued behind every other,
+      and that wait is what grows with concurrency. The registration, the shared lock table and the
+      commit-time teardown all came out, which is how the read-set came to be backend-local.
+    </p>
+  </aside>
+
+  <figure class="fig wide" data-fig="scaling">
+    <div class="fig-frame"><canvas class="fig-canvas"></canvas></div>
+    <figcaption class="fig-cap">Read overhead against client count, shared-SSI capture and backend-local capture. Same binary, observe on vs off, interleaved and order-controlled on one warm cluster.</figcaption>
+  </figure>
 </section>
 
 <!-- ───────────────────────── 9 · What's next ───────────────────────── -->

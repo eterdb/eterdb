@@ -103,7 +103,7 @@ try "canonical dropped"        'P "s|<link rel=\"canonical\"[^>]*/>||" site/tech
 try "og:image dropped"         'P "s|property=\"og:image\" content|property=\"og:img\" content|" site/tech.html'
 
 # ── SEO ──────────────────────────────────────────────────────────────────────
-try "heading level skipped"    'P "s|<h3>Then, the ZFS era</h3>|<h5>Then, the ZFS era</h5>|" site/tech.html'
+try "heading level skipped"    'P "s|<h3>Reading a blocked undo</h3>|<h5>Reading a blocked undo</h5>|" site/tech.html'
 try "second h1 added"          'P "s|<h2>1\. Trans|<h1>1. Trans|" site/tech.html'
 try "noindex on homepage"      'P "s|<title>|<meta name=\"robots\" content=\"noindex\"><title>|" site/index.html'
 try "404 made indexable"       'P "s|content=\"noindex, follow\"|content=\"index, follow\"|" site/404.html'

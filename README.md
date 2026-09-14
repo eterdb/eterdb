@@ -34,16 +34,26 @@
 
 ## What is EterDB?
 
-Agents now write most new production database code, and a committed transaction is treated as a
-*permanent* one. When a bad `UPDATE` mangles a thousand rows, a migration corrupts a table, or an
-agent drops the wrong object, the recovery options are blunt: **backups and PITR roll back the
-*whole* database**, losing every unrelated write since, and **branches and forks only protect you
-*before* a change ships**.
+A migration zeroes 1,200 invoice amounts at 14:00. You catch it at 14:40. A PITR restore to 13:59
+brings the amounts back and discards forty minutes of orders, payments and signups that had
+nothing to do with the migration. EterDB reverses the 1,200 rows and keeps the forty minutes.
 
-EterDB reverses one transaction after it has shipped, on a live database. It records the
-before/after image of every tracked row, computes a compensating transaction, and applies it
-atomically, reversing exactly what that transaction changed and leaving concurrent, unrelated
-writes alone. A human or the agent itself can run it.
+|  | Backup or PITR restore | EterDB undo |
+| --- | --- | --- |
+| Recovers | the whole database as of a past moment | the rows one transaction touched |
+| Discards | every write after that moment | nothing else |
+| The database | comes back from a copy | stays live throughout |
+| Writes that read the bad value | indistinguishable from the rest | listed before you decide |
+
+It records the before and after image of every write to a tracked table, computes the
+compensating transaction for one transaction id, and applies it atomically against the live
+database. A human or the agent that made the change can run it, which matters now that agents
+write most new production database code and a committed transaction is treated as a permanent one.
+
+Point-in-time recovery is inside EterDB as the storage tier: `pg_basebackup` base backups plus
+archived-WAL replay, in unprivileged containers. It brings a dropped table back, since a
+`DROP` leaves no row to reverse. Branches and forks are the other half of the toolkit and protect
+a change before it ships; this is for after.
 
 This repository is the open-source **engine, CLI, and sidecars**. The hosted multi-tenant control
 plane is not part of it.
@@ -64,22 +74,33 @@ To point EterDB at your own data instead, see [Deployment](#deployment).
 
 ## How it works
 
-**Undo is surgical.** EterDB restores the exact pre-incident state of the rows a transaction
-touched; concurrent legitimate writes are untouched. Verified end-to-end in
-[`test/e2e.sh`](test/e2e.sh).
+A sidecar reads the engine's WAL through logical decoding and records the row before and the row
+after, for every write to a tracked table, into a metadata store outside your database. Reads are
+captured separately, inside the engine, as `(table, primary key)`: a read leaves no row behind, so
+nothing outside the process can see one.
 
-**Every undo is checked first.** EterDB looks at what depends on a transaction before reversing
-it. A later *write* to the same rows makes the undo **dependent → review**; so does a later
-transaction that only *read* them. Either way you see the dependent set and decide.
-([How read-capture works →](https://eterdb.com/tech))
+`eter preview <txid>` builds the dependency graph for one transaction out of that store. If
+nothing has overwritten or read the rows it wrote, the transaction is **clean**, and
+`eter undo <txid> --apply` inverts the recorded before-images into compensating DML and runs all
+of it against the live database in a single transaction, restoring exactly those rows and leaving
+concurrent writes alone (end-to-end in [`test/e2e.sh`](test/e2e.sh)). If something has, the
+transaction is **dependent**: the preview names every dependent transaction and marks each as
+provably dependent or only coarsely so, and you choose to refuse, cascade, or reverse the target
+alone.
 
-**Database state only.** EterDB cannot unsend an email or reverse a charge. It surfaces the
-external references (Stripe `ch_…`, message ids) in the rows an undo touches, so you see the
-external fallout before you decide.
+A `DROP` has no before-image to invert, so dropped tables and columns take the other path: a
+`pg_basebackup` base backup plus archived-WAL replay into a throwaway Postgres, with the object
+extracted from the copy. The live database is never restored over.
 
-**It is PostgreSQL 18.** One piece, read-dependency capture, has to be in the engine, and it
-ships as a small upstream-tracked patch. Extensions including pgvector, your ORM, and your SQL
-dialect all work unchanged.
+Undo reverses database state. It cannot unsend an email or reverse a charge, so the preview
+surfaces the external references (Stripe `ch_…`, message ids) in the rows it would touch before
+you decide.
+
+It is PostgreSQL 18. Read capture is the one piece that has to be in the engine, and it ships as
+a patch of nine files and about 390 lines tracked against upstream, targeting one major version at
+a time. The patched binary passes the PostgreSQL isolation (119/119) and regression (231/231)
+suites with observe off, and thirteen extensions including pgvector build against it and pass
+their own `installcheck`. Your driver, ORM and SQL dialect are unchanged.
 
 ## The `eter` CLI
 
