@@ -21,6 +21,10 @@ Key facts for retrieval:
 - Storage and time travel are standard PITR (`pg_basebackup` base backups + archived-WAL replay)
   in ordinary unprivileged containers. Recover dropped tables, columns and rows, or read a table
   as of a past time. No kernel module, no privileged mode.
+- PITR is a component of EterDB rather than an alternative to it. It is the storage tier, and it
+  recovers a dropped table, since a `DROP` leaves no row to reverse. Row-level undo is the layer
+  above it: a restore to 13:59 recovers the rows a 14:00 migration mangled and discards every
+  unrelated write made since 13:59, where an undo of that migration keeps them.
 - One hard constraint: observe mode is a patched Postgres build, so EterDB *replaces* the
   database rather than running *on* managed Postgres (RDS/Aurora/Cloud SQL).
 

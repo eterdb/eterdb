@@ -400,6 +400,10 @@ b { font-weight: 600; color: var(--ink); }
 /* ───── Scene: terminal (agent) + table (data), side by side ───── */
 .scene { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-card); align-items: stretch; }
 .section .scene { margin-top: var(--s-7); }
+/* Body copy after a section's own content (a table, a grid), where
+   `.section-head p` no longer applies. */
+.section-note { max-width: 680px; font-size: var(--fs-meta); color: var(--muted); margin: var(--s-5) 0 0; line-height: 1.65; }
+.section-note code { font-size: .9em; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--ink-2); }
 .doc-section .scene { margin-top: var(--s-6); }
 .scene .term { display: flex; flex-direction: column; }
 .scene .term-body { height: 360px; }
@@ -611,11 +615,6 @@ b { font-weight: 600; color: var(--ink); }
   font-weight: 800; margin: var(--s-3) 0 var(--s-5);
 }
 .doc-lede { font-size: var(--fs-lg); color: var(--ink-2); margin: 0 0 var(--s-5); line-height: 1.62; }
-.doc-tldr {
-  font-size: var(--fs-body); color: var(--muted); margin: 0;
-  background: var(--bg-soft); border: 1px solid var(--line); border-left: 3px solid var(--ink);
-  border-radius: var(--r-sm); padding: var(--s-4) var(--s-5);
-}
 
 /* At-the-top table of contents */
 .doc-toc { padding: var(--s-6) 0; border-bottom: 1px solid var(--line); }
@@ -762,25 +761,18 @@ b { font-weight: 600; color: var(--ink); }
 .dtable tbody th { font-weight: 600; color: var(--ink); }
 .dtable td { font-family: "JetBrains Mono", monospace; color: var(--ink-2); }
 .dtable tbody tr:last-child td, .dtable tbody tr:last-child th { border-bottom: 0; }
+/* Prose variant, for a comparison whose cells are sentences rather than
+   numbers: the monospace and the small size above are for figures. */
+.dtable.compare { font-size: var(--fs-meta); margin-top: var(--s-7); }
+.dtable.compare td { font-family: inherit; }
+.dtable.compare thead th { color: var(--ink); font-size: var(--fs-caption); }
+/* Three prose columns in 400px: buy the cells their horizontal space back. */
+@media (max-width: 560px) {
+  .dtable.compare th, .dtable.compare td { padding: var(--s-3) var(--s-2); }
+}
 .dtable .t-flat { color: #1f7a44; }        /* flat / good trend */
 .dtable .t-rise { color: #b4530a; }        /* rising / watch */
 .dtable .t-off  { color: var(--muted); }   /* off the hot path */
-
-/* Yes/No two-column compare, "runs on" vs "won't run on" */
-.yncols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); margin: var(--s-5) 0; }
-.yncol { border: 1px solid var(--line-2); padding: var(--s-4) var(--s-5); }
-.yncol h3 {
-  margin: 0 0 var(--s-3); font-size: var(--fs-caption); font-weight: 700;
-  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-}
-.yncol ul { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--s-2); }
-.yncol li { font-size: var(--fs-meta); color: var(--ink-2); line-height: 1.5; padding-left: 22px; position: relative; }
-.yncol li code { font-size: .9em; }
-.yncol.yes { background: #f4faf6; border-color: #cfe8d7; }
-.yncol.no  { background: #fdf5f4; border-color: #f0d6d2; }
-.yncol.yes li::before { content: "✓"; position: absolute; left: 0; top: -1px; color: #1f7a44; font-weight: 700; }
-.yncol.no  li::before { content: "✕"; position: absolute; left: 0; top: -1px; color: #c0392b; font-weight: 700; }
-@media (max-width: 560px) { .yncols { grid-template-columns: 1fr; } }
 
 /* Callouts */
 .callout {
@@ -793,24 +785,6 @@ b { font-weight: 600; color: var(--ink); }
 }
 .callout p { margin: 0; color: var(--ink-2); font-size: var(--fs-body); }
 
-/* Part divider, the two big halves of the page (Postgres internals / eterDB). */
-.doc-part { margin: var(--s-9) 0 var(--s-3); padding-top: var(--s-7); border-top: 2px solid var(--ink); }
-.doc-part-num {
-  display: inline-block; font-family: "JetBrains Mono", monospace; font-size: var(--fs-sm);
-  font-weight: 600; text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
-  margin-bottom: var(--s-2);
-}
-.doc-part-title { font-size: clamp(28px, 4.5vw, 44px); font-weight: 800; letter-spacing: -.03em; line-height: 1.08; margin: 0 0 var(--s-3); }
-.doc-part-lede { font-size: var(--fs-lg); color: var(--ink-2); line-height: 1.6; margin: 0; max-width: 62ch; }
-/* Slim "skip the basics" pointer under the Part 1 banner. */
-.skip-note {
-  margin: var(--s-5) 0 0; padding: var(--s-3) var(--s-4);
-  border: 1px solid var(--line-2); border-left: 3px solid var(--ink);
-  border-radius: var(--r-sm); background: var(--bg-soft);
-  font-size: var(--fs-meta); color: var(--ink-2);
-}
-.skip-note a { font-weight: 600; white-space: nowrap; }
-
 /* Aside, a demoted war-story / caveats block, amber and multi-paragraph,
    visually distinct from the blue callouts so it reads as a side-trip. */
 .aside-fix {
@@ -820,8 +794,25 @@ b { font-weight: 600; color: var(--ink); }
 .aside-fix p { margin: 0 0 var(--s-3); color: var(--ink-2); font-size: var(--fs-body); line-height: 1.62; }
 .aside-fix p:last-child { margin-bottom: 0; }
 
+/* Numbered pipeline, the path of one undo under the page title. Same metrics as
+   .spec below, with a monospace ordinal where .spec puts its square. */
+.steps { counter-reset: step; margin: 0; padding: 0; list-style: none; display: grid; gap: var(--s-3); }
+.steps li {
+  counter-increment: step; position: relative; padding-left: 30px;
+  font-size: var(--fs-md); color: var(--ink-2); line-height: 1.62;
+}
+.steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 1px;
+  font-family: "JetBrains Mono", monospace; font-size: var(--fs-sm);
+  font-weight: 600; color: var(--faint);
+}
+.steps b { color: var(--ink); font-weight: 700; }
+
 /* Spec list */
 .spec { margin: var(--s-4) 0 0; padding: 0; list-style: none; display: grid; gap: var(--s-3); }
+/* The list carries no bottom margin (it is usually the last thing in a section),
+   so give the gap back when body copy follows it. */
+.spec + p { margin-top: var(--s-4); }
 .spec li {
   position: relative; padding-left: 26px; font-size: var(--fs-body); color: var(--ink-2); line-height: 1.6;
 }
@@ -830,14 +821,6 @@ b { font-weight: 600; color: var(--ink); }
   border-radius: 2px; background: var(--ink);
 }
 
-/* Known-limits grid */
-.limits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); margin-top: var(--s-5); }
-.limits-card {
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md);
-  padding: var(--s-5); box-shadow: var(--shadow-sm);
-}
-.limits-card h3 { margin-bottom: var(--s-2); }
-.limits-card p { font-size: var(--fs-meta); color: var(--muted); margin: 0; line-height: 1.6; }
 
 /* Further-reading list, one card per source */
 .reading-list {
@@ -944,7 +927,6 @@ figcaption.fig-cap { font-size: var(--fs-sm); color: var(--faint); padding: 0 va
 
 @media (max-width: 720px) {
   .docnav-links { display: none; }
-  .limits-grid { grid-template-columns: 1fr; }
   .doc-section { padding: var(--s-7) 0; }
 }
 

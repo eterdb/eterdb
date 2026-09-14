@@ -89,13 +89,20 @@ removed.
 ## The technical page (`/tech`)
 
 `tech.html` is the credibility page for a technical audience (HN, dev directories): the
-architecture, built up **from first principles** like an explorable explanation. Nine sections:
-the transaction as the unit of undo, the shape of the system, write capture via logical decoding
-(MVCC + versions), the read-dependency a backup can't see (`ctid`, slot reuse, read-time PK
-resolution), on-demand graph derivation + the three undo modes, base-backup + WAL-replay time
-travel (including the ZFS to PITR change, ADR 0003), deployment, observe-mode overhead, and
-what's next. Content is drawn from `PLAN.md`, `performance_report.md`, and
-`compatibility_report.md`; keep it in sync when those change.
+architecture, built up **from first principles** like an explorable explanation. The page title
+is followed by the six numbered steps of one undo, so a reader gets the whole mechanism before
+any of it is explained. Then nine sections: the transaction as the unit of undo, the shape of the
+system, write capture via logical decoding (MVCC + versions), the read-dependency a backup can't
+see (`ctid`, slot reuse, read-time PK resolution), on-demand graph derivation + the three undo
+modes, base-backup + WAL-replay time travel, deployment, observe-mode overhead, and what's next.
+Content is drawn from `PLAN.md`, `performance_report.md`, and `compatibility_report.md`; keep it
+in sync when those change.
+
+**A section describes what eterDB does today, and nothing else** (HN launch feedback, issue #230).
+A superseded design goes in a labelled aside at the end of the section that replaced it, out of
+the reading flow: the ZFS storage substrate is the callout closing §6, the shared-SSI first pass
+at observe mode is the amber aside closing §8, after the current numbers and ahead of the chart
+that plots both. A reader who never opens an aside still gets a complete and current account.
 
 **One rule governs where a Postgres concept is explained: the section that needs it, and nowhere
 earlier** (issue #209). The page has no primer up front and no glossary box. Row versions,

@@ -330,6 +330,61 @@
       </div>
     </section>
 
+    <!-- ───────────────────────── Restore vs undo ─────────────────────────
+     Answered once, here, in the section that owns it: a reader who knows PITR
+     arrives with "this is barman with a website" and needs the difference in
+     one screen. PITR is a component of eterDB rather than a competitor (it is
+     the storage tier), so the comparison names it instead of working around
+     it. Keep the scenario concrete and the numbers in it; an abstract version
+     of this paragraph left four HN readers still asking (issue #230). -->
+    <section class="section" id="vs-restore">
+      <div class="section-head">
+        <h2>A restore rewinds everything.</h2>
+        <p>A migration zeroes 1,200 invoice amounts at 14:00. You catch it at 14:40. Restoring to
+          13:59 brings the amounts back and discards forty minutes of orders, payments and signups
+          that had nothing to do with the migration. eterDB reverses the 1,200 rows and keeps the
+          forty minutes.</p>
+      </div>
+
+      <table class="dtable compare">
+        <caption>What each one recovers, and what it costs to get there.</caption>
+        <thead>
+          <tr>
+            <td></td>
+            <th scope="col">Backup or PITR restore</th>
+            <th scope="col">eterDB undo</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Recovers</th>
+            <td>the whole database as of a past moment</td>
+            <td>the rows one transaction touched</td>
+          </tr>
+          <tr>
+            <th scope="row">Discards</th>
+            <td>every write after that moment</td>
+            <td>nothing else</td>
+          </tr>
+          <tr>
+            <th scope="row">The database</th>
+            <td>comes back from a copy</td>
+            <td>stays live throughout</td>
+          </tr>
+          <tr>
+            <th scope="row">Writes that read the bad value</th>
+            <td>indistinguishable from the rest</td>
+            <td>listed before you decide</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="section-note">Point-in-time recovery is inside eterDB as the storage tier: base
+        backups plus archived-WAL replay, in unprivileged containers. It brings a dropped table
+        back, because a <code>DROP</code> leaves no row to reverse. Row-level undo is the layer
+        above it.</p>
+    </section>
+
     <!-- ───────────────────────── Delete ───────────────────────── -->
     <section class="section">
       <div class="section-head">
